@@ -72,6 +72,11 @@ const DECK: FlashCard[] = [
     q: "GK 里 ρ_d、ρ_f 的符号直觉 (call)?",
     a: "ρ_d = K·T·e^(−rd·T)·Φ(d2) > 0 (贴现K变便宜)\nρ_f = −S·T·e^(−rf·T)·Φ(d1) < 0 (rf↑ 压低远期)",
   },
+  {
+    tag: "Greeks",
+    q: "vanna 和 volga 各是什么? 对冲语言怎么说?",
+    a: "vanna = ∂Δ/∂σ = ∂vega/∂S —— RR 对冲的语言\n(spot 与 vol 联动的敞口, skew 风险)\nvolga = ∂vega/∂σ —— BF 对冲的语言\n(vol 的凸性敞口, smile 曲率风险)\ncall 与 put 的 volga 完全相同",
+  },
   // ── Smile ──
   {
     tag: "Smile",
@@ -87,6 +92,21 @@ const DECK: FlashCard[] = [
     tag: "Smile",
     q: "Γ 和 Vega 在哪最大? 期限怎么变?",
     a: "都在 ATM (K ≈ F) 最大\nΓ ∝ φ(d1)/(S·σ·√T): 越临近到期越尖\nVega ∝ √T: 长期限更大",
+  },
+  {
+    tag: "SABR",
+    q: "SABR 三参数 (α, ρ, ν) 的直觉?",
+    a: "α ≈ ATM vol 水平 (level)\nρ ≈ 偏斜方向 (skew), 与 RR 同号\nν ≈ vol-of-vol, 微笑弯曲程度 (convexity)\n(β 通常固定, FX 惯例 β = 1 对数正态)",
+  },
+  {
+    tag: "隐含vol",
+    q: "隐含波动率怎么求? Newton 迭代用什么当斜率?",
+    a: "隐含 σ = 用市场价反解 GK 的 σ\nNewton: σ_{n+1} = σ_n − (V(σ_n) − V_mkt)/vega(σ_n)\nvega 就是价格对 σ 的斜率\nvega > 0 ⇒ 价格对 σ 单调, 解唯一",
+  },
+  {
+    tag: "隐含vol",
+    q: "深度实值期权为什么反解不出 σ?",
+    a: "深 ITM/OTM 处 vega → 0\n价格对 σ 几乎不动 ⇒ σ 不可辨识 (Newton 除以≈0)\n价格才是良态不变量: σ 微动价格几乎不变\n所以报价用 vol 但对冲/结算认价格",
   },
   // ── 障碍 / 随机分析 ──
   {
@@ -180,6 +200,8 @@ const TAG_COLOR: Record<string, string> = {
   GK: "text-steel border-steel/40",
   Greeks: "text-steel border-steel/40",
   Smile: "text-plum border-plum/40",
+  SABR: "text-plum border-plum/40",
+  隐含vol: "text-forest border-forest/40",
   障碍: "text-crimson border-crimson/40",
   "数字/触碰": "text-crimson border-crimson/40",
   随机分析: "text-forest border-forest/40",
@@ -309,9 +331,10 @@ export default function Flashcards() {
         </div>
 
         <Note>
-          键盘: ← 上一张 / → 下一张 / 空格 翻面。卡组 {n} 张, 覆盖五条肌肉记忆 + GK 公式 + Smile 报价 + 障碍 (BGK) +
-          数字/触碰 (digital 对称 / OT+NT 互补) + CIP/carry + 随机分析 (反射原理 / Feynman-Kac) + 在岸市场结构 (CNY
-          vs CNH / 中间价 / 做市商) + 策略可加性 + 情景矩阵。考前把
+          键盘: ← 上一张 / → 下一张 / 空格 翻面。卡组 {n} 张, 覆盖五条肌肉记忆 + GK 公式 + Smile 报价 + SABR 三参数 +
+          vanna/volga (RR·BF 对冲语言) + 隐含 vol (Newton 反解 / vega 不可辨识) + 障碍 (BGK) + 数字/触碰 (digital 对称 /
+          OT+NT 互补) + CIP/carry + 随机分析 (反射原理 / Feynman-Kac) + 在岸市场结构 (CNY vs CNH / 中间价 / 做市商) +
+          策略可加性 + 情景矩阵。考前把
           <span className="text-gold"> 肌肉记忆五条</span> 过到条件反射为止。
         </Note>
       </Card>

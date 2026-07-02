@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMarket } from "../state/market";
 import { pairConv } from "../lib/conventions";
-import { gk, type CP } from "../lib/gk";
+import { gk, vanna, type CP } from "../lib/gk";
 import { Card, Field, Row, Note, fmt } from "../components/ui";
 
 type Side = "buy" | "sell";
@@ -57,6 +57,7 @@ export default function PositionBook() {
   const [notional, setNotional] = useState<number>(mkt.notional);
   const [note, setNote] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedTsv, setCopiedTsv] = useState(false);
 
   const formOk = Number.isFinite(K) && K > 0 && Number.isFinite(sigmaPct) && sigmaPct > 0 && Number.isFinite(notional) && notional > 0;
 
@@ -106,18 +107,47 @@ export default function PositionBook() {
         deltaN: g ? sgn * g.deltaSpot * p.notional : NaN,   // delta×名义(外币)
         vegaN: g ? sgn * g.vegaPct * p.notional : NaN,      // 每 1% vol(本币)
         thetaN: g ? sgn * g.thetaDay * p.notional : NaN,    // 每日历日(本币)
+        gammaN: g ? sgn * g.gamma * p.notional : NaN,       // ∂²V/∂S²×名义
+        vannaN: ok ? sgn * vanna({ S: mkt.S, K: p.K, rd: mkt.rd, rf: mkt.rf, sigma: p.sigma, T: mkt.T }) * p.notional : NaN, // ∂²V/∂S∂σ×名义
       };
     });
   }, [book, mkt.S, mkt.rd, mkt.rf, mkt.T, mktOk]);
 
   const sum = useMemo(() => {
-    const acc = { pv: 0, delta: 0, vega: 0, theta: 0, bad: false };
+    const acc = { pv: 0, delta: 0, vega: 0, theta: 0, gamma: 0, vanna: 0, bad: false };
     for (const r of rows) {
-      if (![r.pv, r.deltaN, r.vegaN, r.thetaN].every(Number.isFinite)) { acc.bad = true; continue; }
+      if (![r.pv, r.deltaN, r.vegaN, r.thetaN, r.gammaN, r.vannaN].every(Number.isFinite)) { acc.bad = true; continue; }
       acc.pv += r.pv; acc.delta += r.deltaN; acc.vega += r.vegaN; acc.theta += r.thetaN;
+      acc.gamma += r.gammaN; acc.vanna += r.vannaN;
     }
     return acc;
   }, [rows]);
+
+  // ---- 复制 TSV(表头+每行+汇总行,直接可贴 Excel) ----
+  const copyTsv = () => {
+    const num = (x: number, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : "NaN");
+    const header = ["方向", "CP", "K", "σ%", `名义(${conv.base})`, `现值(${conv.quote})`, `Δ×名义(${conv.base})`, `Vega/1%(${conv.quote})`, `θ/日(${conv.quote})`].join("\t");
+    const lines = rows.map(({ p, pv, deltaN, vegaN, thetaN }) =>
+      [
+        p.side === "buy" ? "买" : "卖",
+        p.cp === "call" ? "Call" : "Put",
+        num(p.K, conv.spotPrecision),
+        num(p.sigma * 100, 2),
+        String(p.notional),
+        num(pv), num(deltaN), num(vegaN), num(thetaN),
+      ].join("\t"),
+    );
+    const total = ["汇总", "", "", "", "", num(sum.pv), num(sum.delta), num(sum.vega), num(sum.theta)].join("\t");
+    const tsv = [header, ...lines, total].join("\n");
+    const done = () => { setCopiedTsv(true); window.setTimeout(() => setCopiedTsv(false), 2000); };
+    try {
+      navigator.clipboard.writeText(tsv).then(done).catch(() => {
+        window.prompt("剪贴板不可用,手动复制:", tsv);
+      });
+    } catch {
+      window.prompt("剪贴板不可用,手动复制:", tsv);
+    }
+  };
 
   const hedgeLots = Math.abs(sum.delta) / LOT;
   const hedgeDir = sum.delta > 0 ? `卖出 Sell ${conv.base}` : `买入 Buy ${conv.base}`;
@@ -203,6 +233,16 @@ export default function PositionBook() {
               tone="gold"
             />
             <Row k="即期手数换算" hint={`1 手 = ${LOT.toLocaleString("en-US")} ${conv.base}`} v={Number.isFinite(hedgeLots) && book.length > 0 ? fmt(hedgeLots, 2) : "—"} />
+            <Row
+              k="净 Gamma×名义"
+              hint="∂²V/∂S²×名义:S 每变 1 单位,Δ×名义的变化量"
+              v={book.length > 0 && Number.isFinite(sum.gamma) ? fmt(sum.gamma, 0) : "—"}
+            />
+            <Row
+              k="净 Vanna×名义"
+              hint="∂²V/∂S∂σ×名义:S 动则 vega 漂移,σ 动则 delta 漂移"
+              v={book.length > 0 && Number.isFinite(sum.vanna) ? fmt(sum.vanna, 0) : "—"}
+            />
           </div>
           {sum.bad && (
             <p className="mt-2 text-xs text-crimson">部分头寸重估失败(市场参数或头寸参数非法),汇总只含有效行。</p>
@@ -236,6 +276,15 @@ export default function PositionBook() {
             </p>
           </div>
         ) : (
+          <>
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button" onClick={copyTsv}
+              className="rounded-md border border-steel bg-panel2 px-3 py-1.5 text-xs font-semibold text-cloud transition-colors hover:border-gold hover:text-gold"
+            >
+              {copiedTsv ? "✓已复制" : "复制 TSV(可贴 Excel)"}
+            </button>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
               <thead>
@@ -282,6 +331,7 @@ export default function PositionBook() {
               </tbody>
             </table>
           </div>
+          </>
         )}
         <Note>
           纯本地教学记账(localStorage,key=fx-book-v1),非真实持仓系统。重估口径:现值与各希腊字母均用当前全局市场参数

@@ -2,7 +2,7 @@
  *  v2:市场参数(S/rd/rf/σ/T/名义)统一取自全局 MarketBar(useMarket),本工具只留 K 与 Call/Put。
  */
 import { useMemo, useState } from "react";
-import { gk, fwd, type CP, type GKInputs } from "../lib/gk";
+import { gk, fwd, vanna, volga, impliedVol, type CP, type GKInputs } from "../lib/gk";
 import { useMarket } from "../state/market";
 import { pairConv } from "../lib/conventions";
 import { Card, Field, Row, Note, fmt, fmtPct } from "../components/ui";
@@ -14,7 +14,7 @@ const W = 560, H = 260;
 const PAD = { l: 52, r: 14, t: 14, b: 30 };
 
 export default function GKPricer() {
-  const { mkt } = useMarket();
+  const { mkt, setMkt } = useMarket();
   const conv = pairConv(mkt.pair);
   const { S, rd, rf, sigma, T, notional } = mkt;
 
@@ -30,6 +30,21 @@ export default function GKPricer() {
   );
   const ok = [S, K, rd, rf, sigma, T].every(Number.isFinite) && S > 0 && K > 0 && sigma > 0 && T > 0;
   const g = useMemo(() => (ok ? gk(cp, inp) : null), [ok, cp, inp]);
+
+  // ---- 隐含波动率反推 ----
+  const [ivPrice, setIvPrice] = useState<number>(NaN);
+  const [ivWrote, setIvWrote] = useState(false);
+  const iv = useMemo(() => {
+    if (!Number.isFinite(ivPrice) || !(S > 0 && K > 0 && T > 0) || ![rd, rf].every(Number.isFinite)) return NaN;
+    return impliedVol(cp, ivPrice, S, K, rd, rf, T);
+  }, [ivPrice, cp, S, K, rd, rf, T]);
+  const ivOk = Number.isFinite(iv);
+  const writeBackSigma = () => {
+    if (!ivOk) return;
+    setMkt({ sigma: Number(iv.toFixed(6)) });
+    setIvWrote(true);
+    window.setTimeout(() => setIvWrote(false), 2000);
+  };
 
   // ---- SVG 采样: S ∈ [0.85S, 1.15S], 60 点 ----
   const chart = useMemo(() => {
@@ -140,9 +155,54 @@ export default function GKPricer() {
         </p>
         <Row k="gamma" hint="∂²V/∂S²" v={fmt(g?.gamma ?? NaN, 4)} />
         <Row k="vega" hint="每 1% vol" v={fmt(g?.vegaPct ?? NaN, 6)} />
+        <Row k="vanna" hint="∂Δ/∂σ = ∂²V/∂S∂σ, RR 对冲的敏感度语言" v={fmt(ok ? vanna(inp) : NaN, 4)} />
+        <Row k="volga" hint="∂vega/∂σ = ∂²V/∂σ², BF 对冲的敏感度语言" v={fmt(ok ? volga(inp) : NaN, 4)} />
         <Row k="theta" hint="每日历日" v={fmt(g?.thetaDay ?? NaN, 6)} tone={g && g.thetaDay < 0 ? "neg" : undefined} />
         <Row k="rhoD" hint="∂V/∂rd" v={fmt(g?.rhoD ?? NaN, 4)} />
         <Row k="rhoF" hint="∂V/∂rf" v={fmt(g?.rhoF ?? NaN, 4)} />
+      </Card>
+
+      <Card title="隐含波动率反推 Implied Vol">
+        <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+          <Field
+            label={`市场期权价 (${conv.quote} / 1${conv.base}名义)`}
+            value={ivPrice} onChange={setIvPrice} step="0.0001" min={0}
+          />
+          <button
+            type="button"
+            disabled={!g}
+            title={g ? `填入当前理论价 ${fmt(g.price, 6)}` : "输入无效"}
+            onClick={() => g && setIvPrice(Number(g.price.toFixed(6)))}
+            className="mb-0.5 rounded-md border border-line bg-panel2 px-2 py-1.5 text-xs text-slate2 transition-colors hover:border-gold hover:text-gold disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            用当前理论价填入
+          </button>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-line/60 bg-panel2/50 px-3 py-2">
+          <span className="text-xs text-slate2">
+            反推 σ<span className="ml-1 opacity-60">(使 GK 理论价 = 市场价)</span>
+          </span>
+          {!Number.isFinite(ivPrice) ? (
+            <span className="font-mono text-sm text-slate2">—</span>
+          ) : ivOk ? (
+            <span className="font-mono text-sm font-semibold text-gold">{fmtPct(iv, 2)}</span>
+          ) : (
+            <span className="text-xs font-semibold text-crimson">价格越界(低于内在值或超上界)</span>
+          )}
+          <button
+            type="button"
+            disabled={!ivOk}
+            onClick={writeBackSigma}
+            className={`shrink-0 rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              ivWrote ? "border-forest bg-forest/15 text-forest" : "border-line bg-panel2 text-slate2 hover:border-gold hover:text-gold"
+            }`}
+          >
+            {ivWrote ? "✓已写回" : "写回全局 σ"}
+          </button>
+        </div>
+        <Note>
+          由市场成交价反推隐含波动率(与全局 σ 无关,只用 S/rd/rf/T 与本卡 K、Call/Put)。反推值 ≠ 全局 σ 即市场 smile/skew 的体现;“写回全局 σ”后 MarketBar 与所有工具同步采用。无解上界:价格不得低于贴现内在值、不得超过 e^{"{−rf T}"}S(call)或 e^{"{−rd T}"}K(put)。
+        </Note>
       </Card>
 
       <Card title="敏感性曲线 (S ± 15%)">

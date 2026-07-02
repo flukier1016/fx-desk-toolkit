@@ -2,7 +2,7 @@
  *  v2:接入全局市场状态 useMarket——S/rd/rf/σ/T/名义 全部来自 MarketBar;本地只留 CP/K/指标/档距/档数。
  *  渲染:HTML 表格热力图(行=vol 冲击 从+到−,列=spot 冲击 从−到+),pnl 指标按值上色,基准格金框。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ladder, pick, type Metric } from "../lib/ladder";
 import type { CP } from "../lib/gk";
 import { useMarket } from "../state/market";
@@ -100,6 +100,29 @@ export default function ScenarioLadder() {
   const dp = METRIC_DP[metric];
   const metricLabel = METRIC_OPTS.find((o) => o.value === metric)?.label ?? metric;
 
+  // ── 复制 TSV:含行列表头(首行=冲击后绝对 S,首列=冲击后绝对 σ%),纯数字无千分位,可直接粘 Excel ──
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+  const copyTsv = async () => {
+    if (!grid) return;
+    const header = ["σ\\S", ...grid.spotShocks.map((ds) => (mkt.S * (1 + ds)).toFixed(conv.spotPrecision))].join("\t");
+    const rows = grid.cells.map((row, i) => {
+      const sigAbs = ((mkt.sigma + grid.volShocks[i]) * 100).toFixed(1) + "%";
+      const vals = row.map((cell) => {
+        const v = pick(cell, metric);
+        return Number.isFinite(v) ? v.toFixed(dp) : "";
+      });
+      return [sigAbs, ...vals].join("\t");
+    });
+    try {
+      await navigator.clipboard.writeText([header, ...rows].join("\n"));
+      setCopied(true);
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch { /* 剪贴板被拒/不可用时静默 */ }
+  };
+
   return (
     <div className="grid gap-4">
       <Card title="参数(市场基准由顶部 MarketBar 统一给定)">
@@ -130,7 +153,21 @@ export default function ScenarioLadder() {
         )}
       </Card>
 
-      <Card title={`情景矩阵 Scenario Ladder · ${metricLabel}(行=σ 冲击 从+到−,列=S 冲击 从−到+)`}>
+      <Card title={
+        <div className="flex items-center justify-between gap-2">
+          <span>{`情景矩阵 Scenario Ladder · ${metricLabel}(行=σ 冲击 从+到−,列=S 冲击 从−到+)`}</span>
+          <button
+            onClick={copyTsv}
+            disabled={!grid}
+            className={`shrink-0 rounded border px-2 py-0.5 text-[10px] font-normal transition-colors ${
+              copied
+                ? "border-forest text-forest"
+                : "border-line text-steel hover:border-gold hover:text-gold disabled:opacity-40 disabled:hover:border-line disabled:hover:text-steel"
+            }`}
+            title="复制当前矩阵为 TSV(含行列表头),可直接粘贴进 Excel"
+          >{copied ? "✓已复制" : "复制 TSV"}</button>
+        </div>
+      }>
         {grid ? (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-right font-mono text-[11px]">

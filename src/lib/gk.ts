@@ -123,3 +123,48 @@ export function atmStrike(kind: "atmf" | "dns" | "dns-pa", S: number, rd: number
   if (kind === "dns") return F * Math.exp(v2);   // 零 delta 跨式(pips)
   return F * Math.exp(-v2);                       // 零 delta 跨式(premium-adjusted)
 }
+
+/** ── v3 扩展:二阶交叉希腊字母 + 隐含波动率 ── */
+
+/** vanna = ∂²V/∂S∂σ(call/put 相同): −e^{−rf T}·φ(d1)·d2/σ */
+export function vanna({ S, K, rd, rf, sigma, T }: GKInputs): number {
+  const [d1, d2] = d12(S, K, rd, rf, sigma, T);
+  void S; void K;
+  return (-Math.exp(-rf * T) * phi(d1) * d2) / sigma;
+}
+
+/** volga = ∂²V/∂σ²(call/put 相同): vega·d1·d2/σ */
+export function volga(inp: GKInputs): number {
+  const { S, K, rd, rf, sigma, T } = inp;
+  const [d1, d2] = d12(S, K, rd, rf, sigma, T);
+  const vega = S * Math.exp(-rf * T) * phi(d1) * Math.sqrt(T);
+  return (vega * d1 * d2) / sigma;
+}
+
+/** 隐含波动率:Newton(vega 导数)+ 越界回退二分;无解返回 NaN */
+export function impliedVol(cp: CP, price: number, S: number, K: number, rd: number, rf: number, T: number): number {
+  const df = Math.exp(-rd * T), ff = Math.exp(-rf * T);
+  const intr = cp === "call" ? Math.max(S * ff - K * df, 0) : Math.max(K * df - S * ff, 0);
+  const upper = cp === "call" ? S * ff : K * df;
+  if (!(price > intr - 1e-14) || !(price < upper + 1e-14)) return NaN;
+  if (price <= intr + 1e-14) return 0;
+  let sig = Math.max(Math.sqrt((2 * Math.PI) / T) * (price / (S * ff)), 0.05); // Brenner–Subrahmanyam 初值
+  for (let i = 0; i < 20; i++) {
+    const p = gkPrice(cp, { S, K, rd, rf, sigma: sig, T });
+    const [d1] = d12(S, K, rd, rf, sig, T);
+    const vega = S * ff * phi(d1) * Math.sqrt(T);
+    const diff = p - price;
+    if (Math.abs(diff) < 1e-12) return sig;
+    if (vega < 1e-12) break;
+    const next = sig - diff / vega;
+    if (next <= 0 || next > 5 || !Number.isFinite(next)) break;
+    sig = next;
+  }
+  // 二分兜底
+  let lo = 1e-6, hi = 5;
+  for (let i = 0; i < 200; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (gkPrice(cp, { S, K, rd, rf, sigma: mid, T }) < price) lo = mid; else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}

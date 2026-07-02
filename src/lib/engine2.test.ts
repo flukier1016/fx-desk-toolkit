@@ -96,9 +96,9 @@ describe("约定注册表", () => {
 });
 
 describe("浏览器自检器(同源不变量)", () => {
-  it("12 项全部通过", () => {
+  it("15 项全部通过", () => {
     const r = runSelfTests();
-    expect(r.length).toBe(12);
+    expect(r.length).toBe(15);
     for (const c of r) expect(c.pass, c.name).toBe(true);
   });
 });

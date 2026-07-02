@@ -17,7 +17,7 @@ export default function SelfTestPanel({ onClose }: { onClose: () => void }) {
         </div>
         {!results ? (
           <button onClick={() => setResults(runSelfTests())}
-            className="w-full rounded-lg bg-gold py-2 text-sm font-bold text-ink hover:opacity-90">运行 12 项不变量检查</button>
+            className="w-full rounded-lg bg-gold py-2 text-sm font-bold text-ink hover:opacity-90">运行全部不变量检查</button>
         ) : (
           <>
             <div className={`mb-2 rounded-md px-3 py-2 text-sm font-bold ${passed === results.length ? "bg-forest/15 text-forest" : "bg-crimson/15 text-crimson"}`}>

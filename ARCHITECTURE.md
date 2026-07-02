@@ -22,7 +22,7 @@
 ```
 L4  UI 工具页       src/tools/*.tsx          一个工具=一个文件,只做展示与交互
 L3  状态层          src/state/market.tsx     全局市场参数(Context+localStorage)
-L2  市场域引擎      src/lib/{smile,cip,strategy,ladder,pnl,conventions}.ts
+L2  市场域引擎      src/lib/{smile,sabr,cip,strategy,ladder,pnl,conventions}.ts
 L1  模型层          src/lib/{gk,barrier,digital}.ts
 L0  数值原语        src/lib/norm.ts           Φ / φ / Φ⁻¹(高精度)
         ↑ 纯 TypeScript、零 DOM、零依赖 —— 这是可迁移性的根基
@@ -49,8 +49,8 @@ L0  数值原语        src/lib/norm.ts           Φ / φ / Φ⁻¹(高精度)
 | **往返/交叉** | 正反变换复原;与独立算法对拍 | delta→K→delta;CIP 的 F 反推 rd;解析希腊字母 vs 有限差分;rf=0 退化 BS 经典值 10.4506 |
 
 落点在三处:
-- **`src/lib/*.test.ts`**(vitest,32 个断言)——CI/本地跑;
-- **`src/lib/selftest.ts` + 引擎自检面板**——同源不变量在**用户浏览器里**实时跑(右上角"✓ 引擎自检"),让使用者当场确认"这份文件算得对";
+- **`src/lib/*.test.ts`**(vitest,40 个断言,含 200 组种子随机参数扫描)——CI/本地跑;
+- **`src/lib/selftest.ts` + 引擎自检面板**——15 项同源不变量在**用户浏览器里**实时跑(右上角"✓ 引擎自检"),让使用者当场确认"这份文件算得对";
 - **规矩**:改任何 lib 函数,必须先跑 `npm test`;新模型没配不变量不许合入。
 
 > 为什么选不变量而不是"标准答案表"?因为标准答案自己可能错、且覆盖不了参数空间;恒等式在**所有**参数下成立,一条顶一万条用例。
@@ -81,6 +81,9 @@ L0  数值原语        src/lib/norm.ts           Φ / φ / Φ⁻¹(高精度)
 | `fx-theme` | 深/浅主题 | App |
 | `eod-draft` | 当日小结草稿 | EODSummary |
 | `fx-book-v1` | 头寸簿 | PositionBook |
+| `fx-strategy-legs-v1` | 策略腿 | StrategyBuilder |
+| `fx-barrier-v2` | 障碍合约参数 | BarrierPricer |
+| `fx-scenario-ladder-v1` | 矩阵设置 | ScenarioLadder |
 
 原则:**只用 localStorage、只存用户自己输入的东西**;"重置/清空"按钮必须提供;导出/导入走剪贴板或本地文件,不走网络。清除全部痕迹 = 浏览器清站点数据。
 
@@ -113,7 +116,7 @@ L0  数值原语        src/lib/norm.ts           Φ / φ / Φ⁻¹(高精度)
 
 ## 7. 边界与已知取舍
 
-- 期权模型为 **GK 常数波动率**闭式解;未实现美式/局部波动率/随机波动率(SABR 校准在书里有,工具按需再加)。
+- 期权模型为 **GK 闭式解 + SABR(Hagan 近似,β=1)微笑**;未实现美式/局部波动率/SABR 精确 PDE。深度实值处 vega→0,σ 不可辨识——**价格才是良态不变量**(方法论教训,见 engine3.test.ts)。
 - 触碰期权为**到期支付**口径;触碰即付(pay-at-hit)口径不同,未实现。
 - 时钟的夏令时为**固定口径**(北京时间夏令偏移),11 月/3 月切换后差 1 小时,页内已注明。
 - 期限 T 用年化数字 + 速选;未做节假日日历(实盘 settle/expiry 规则以台子为准)。

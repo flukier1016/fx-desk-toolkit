@@ -1,10 +1,12 @@
 /** 微笑曲线构建器 —— ATM / 25ΔRR / 25ΔBF (可选 10Δ) → σ(Δ) 曲线 + 锚点行权价
  *  x 轴 = 看涨等价 Δ (call-equivalent delta):左 = Call 翼(高 K),右 = Put 翼(低 K)
  *  S/rd/rf/T 取自全局市场状态(顶部 MarketBar 编辑);ATM σ 本地可调,可一键写回全局。
+ *  v3:可选 SABR 校准模式(β=1)——三锚点(DNS ATM + 25ΔC/25ΔP)校准 α/ρ/ν,画行权价空间 σ(K)。
  */
 import { useMemo, useState } from "react";
 import { smileNodes, smileStrikes, pchip, type SmileQuotes } from "../lib/smile";
-import type { DeltaConv } from "../lib/gk";
+import { fwd, type DeltaConv } from "../lib/gk";
+import { calibrateSabr, sabrVol } from "../lib/sabr";
 import { useMarket } from "../state/market";
 import { pairConv } from "../lib/conventions";
 import { Card, Field, Select, Row, Note, fmt, fmtPct } from "../components/ui";
@@ -43,6 +45,8 @@ export default function SmileBuilder() {
   const [bf10Pct, setBf10Pct] = useState(1.2);
   // 工具特有:Δ 约定(初值随货币对惯例)
   const [conv, setConv] = useState<DeltaConv>(() => (conv0.premiumAdjusted ? "pa-spot" : "spot"));
+  // v3:SABR 校准模式开关(默认关 = 原 Δ 空间 pchip 视图不变)
+  const [useSabr, setUseSabr] = useState(false);
 
   const { S, rd, rf, T } = mkt;
   const atmOk = Number.isFinite(atmPct) && atmPct > 0;
@@ -81,6 +85,54 @@ export default function SmileBuilder() {
     return { nodes, path, px, py, yTicks, rows };
   }, [atmPct, rr25Pct, bf25Pct, use10, rr10Pct, bf10Pct, S, rd, rf, T, conv]);
 
+  // ── v3:SABR 三锚点校准(β=1)+ 行权价空间 σ(K) 曲线 ──
+  // 锚点与下表同源:ATM = DNS 行权价,25ΔC/25ΔP = smileStrikes 按所选 Δ 约定反解的 K 与 σ
+  const sabr = useMemo(() => {
+    if (!useSabr || !model) return null;
+    const rowAtm = model.rows.find((r) => r.label === "ATM");
+    const rowP = model.rows.find((r) => r.label === "25ΔP");
+    const rowC = model.rows.find((r) => r.label === "25ΔC");
+    if (!rowAtm || !rowP || !rowC) return null;
+    const F = fwd(S, rd, rf, T);
+    const { params, rmse } = calibrateSabr({
+      F, T,
+      Katm: rowAtm.strike, sigAtm: rowAtm.sigma,
+      Kp: rowP.strike, sigP: rowP.sigma,
+      Kc: rowC.strike, sigC: rowC.sigma,
+    });
+    const sabrAt = (K: number) => sabrVol(F, K, T, params);
+
+    // 采样 K ∈ F ± 4·σ_ATM·√T·F,80 点
+    const half = 4 * rowAtm.sigma * Math.sqrt(T) * F;
+    const kLo = Math.max(F - half, F * 1e-3), kHi = F + half;
+    const pts: { K: number; s: number }[] = [];
+    for (let i = 0; i < 80; i++) {
+      const K = kLo + ((kHi - kLo) * i) / 79;
+      const s = sabrAt(K);
+      if (Number.isFinite(s)) pts.push({ K, s });
+    }
+    if (pts.length < 2) return null;
+    const anchors = [
+      { label: "25ΔP", K: rowP.strike, s: rowP.sigma },
+      { label: "ATM", K: rowAtm.strike, s: rowAtm.sigma },
+      { label: "25ΔC", K: rowC.strike, s: rowC.sigma },
+    ];
+    const sigAll = [...pts.map((p) => p.s), ...anchors.map((a) => a.s)];
+    let yLo = Math.min(...sigAll), yHi = Math.max(...sigAll);
+    const pad = Math.max((yHi - yLo) * 0.15, 0.0015);
+    yLo -= pad; yHi += pad;
+    const px = (K: number) => PAD_L + ((K - kLo) / (kHi - kLo)) * PLOT_W;
+    const py = (s: number) => PAD_T + (1 - (s - yLo) / (yHi - yLo)) * PLOT_H;
+    const path = pts
+      .map((p, i) => `${i === 0 ? "M" : "L"}${px(p.K).toFixed(2)},${py(p.s).toFixed(2)}`)
+      .join(" ");
+    const yTicks: number[] = [];
+    for (let i = 0; i <= 4; i++) yTicks.push(yLo + ((yHi - yLo) * i) / 4);
+    const xTicks: number[] = [];
+    for (let i = 0; i <= 4; i++) xTicks.push(kLo + ((kHi - kLo) * i) / 4);
+    return { F, params, rmse, sabrAt, anchors, path, px, py, yTicks, xTicks };
+  }, [useSabr, model, S, rd, rf, T]);
+
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 md:grid-cols-2">
@@ -114,6 +166,13 @@ export default function SmileBuilder() {
               <Field label="10Δ BF" value={bf10Pct} onChange={setBf10Pct} step="0.05" suffix="%" />
             </div>
           )}
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-slate2">
+            <input
+              type="checkbox" checked={useSabr} onChange={(e) => setUseSabr(e.target.checked)}
+              className="accent-gold"
+            />
+            SABR 校准模式(β=1;三锚点 → α/ρ/ν,画行权价空间 σ(K))
+          </label>
         </Card>
         <Card title="全局市场参数 Market(顶部 MarketBar 编辑)">
           <Row k="货币对 Pair" v={mkt.pair} hint={`(${conv0.deltaConvNote})`} tone="gold" />
@@ -197,6 +256,121 @@ export default function SmileBuilder() {
         )}
       </Card>
 
+      {useSabr && (
+        <div className="grid gap-4 md:grid-cols-[280px_1fr]">
+          <Card title="SABR 校准参数(β=1)">
+            {sabr ? (
+              <>
+                <Row k="α" hint="(骨架水平≈ATM σ)" v={fmtPct(sabr.params.alpha, 3)} tone="gold" />
+                <Row k="β" hint="(固定,FX 惯例)" v="1" />
+                <Row
+                  k="ρ" hint="(偏斜方向)"
+                  v={fmt(sabr.params.rho, 4)}
+                  tone={sabr.params.rho >= 0 ? "pos" : "neg"}
+                />
+                <Row k="ν" hint="(微笑弯曲)" v={fmt(sabr.params.nu, 4)} />
+                <Row k="RMSE" hint="(两翼拟合)" v={sabr.rmse.toExponential(2)} />
+                <div className="mt-3">
+                  {sabr.rmse < 1e-4 ? (
+                    <span className="inline-block rounded-md border border-forest bg-forest/10 px-2 py-1 text-xs text-forest">
+                      ✓ 锚点复现(rmse &lt; 1e-4)
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gold">
+                      ⚠ rmse ≥ 1e-4:三锚点未完全复现,SABR 曲线仅作近似参考(检查报价是否极端)。
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="py-4 text-center text-sm text-slate2">—(输入无效,无法校准)</p>
+            )}
+          </Card>
+          <Card title="SABR σ(K) — 行权价空间(Hagan β=1)">
+            {sabr ? (
+              <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="SABR 行权价空间波动率曲线">
+                {/* 网格:横 */}
+                {sabr.yTicks.map((s, i) => (
+                  <g key={`sgy${i}`}>
+                    <line
+                      x1={PAD_L} x2={W - PAD_R} y1={sabr.py(s)} y2={sabr.py(s)}
+                      stroke="var(--color-line)" strokeWidth={0.6} opacity={0.45}
+                    />
+                    <text
+                      x={PAD_L - 6} y={sabr.py(s) + 3} textAnchor="end"
+                      fontSize={10} fill="var(--color-slate2)" fontFamily="var(--font-mono)"
+                    >
+                      {(s * 100).toFixed(2)}
+                    </text>
+                  </g>
+                ))}
+                {/* 网格:纵 + K 刻度 */}
+                {sabr.xTicks.map((k, i) => (
+                  <g key={`sgx${i}`}>
+                    <line
+                      x1={sabr.px(k)} x2={sabr.px(k)} y1={PAD_T} y2={H - PAD_B}
+                      stroke="var(--color-line)" strokeWidth={0.6} opacity={0.35}
+                    />
+                    <text
+                      x={sabr.px(k)} y={H - PAD_B + 14} textAnchor="middle"
+                      fontSize={10} fill="var(--color-slate2)" fontFamily="var(--font-mono)"
+                    >
+                      {fmt(k, conv0.spotPrecision)}
+                    </text>
+                  </g>
+                ))}
+                {/* 远期 F 参考线 */}
+                <line
+                  x1={sabr.px(sabr.F)} x2={sabr.px(sabr.F)} y1={PAD_T} y2={H - PAD_B}
+                  stroke="var(--color-steel)" strokeWidth={0.8} strokeDasharray="4 3" opacity={0.7}
+                />
+                <text
+                  x={sabr.px(sabr.F)} y={PAD_T - 6} textAnchor="middle"
+                  fontSize={10} fill="var(--color-steel)" fontFamily="var(--font-mono)"
+                >
+                  F = {fmt(sabr.F, conv0.spotPrecision)}
+                </text>
+                {/* 轴 */}
+                <line x1={PAD_L} x2={W - PAD_R} y1={H - PAD_B} y2={H - PAD_B} stroke="var(--color-line)" strokeWidth={1} />
+                <line x1={PAD_L} x2={PAD_L} y1={PAD_T} y2={H - PAD_B} stroke="var(--color-line)" strokeWidth={1} />
+                <text x={PAD_L - 40} y={PAD_T - 6} fontSize={10} fill="var(--color-slate2)">σ (%)</text>
+                <text x={PAD_L} y={H - 8} fontSize={10} fill="var(--color-steel)">← 低 K · Put 翼</text>
+                <text x={W - PAD_R} y={H - 8} textAnchor="end" fontSize={10} fill="var(--color-steel)">Call 翼 · 高 K →</text>
+                <text x={PAD_L + PLOT_W / 2} y={H - 8} textAnchor="middle" fontSize={10} fill="var(--color-slate2)">
+                  x = 行权价 K ∈ F ± 4σ√T·F
+                </text>
+                {/* SABR 曲线 */}
+                <path d={sabr.path} fill="none" stroke="var(--color-steel)" strokeWidth={2} />
+                {/* 三锚点(金色圆点) */}
+                {sabr.anchors.map((a) => {
+                  const cx = sabr.px(a.K), cy = sabr.py(a.s);
+                  const above = cy > PAD_T + 20;
+                  return (
+                    <g key={a.label}>
+                      <circle cx={cx} cy={cy} r={4} fill="var(--color-gold)" stroke="var(--color-ink)" strokeWidth={1.2} />
+                      <text
+                        x={cx} y={above ? cy - 9 : cy + 17} textAnchor="middle"
+                        fontSize={10} fill="var(--color-gold)" fontFamily="var(--font-mono)"
+                      >
+                        {a.label} {(a.s * 100).toFixed(2)}%
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+            ) : (
+              <p className="py-8 text-center text-sm text-slate2">—(输入无效,无法校准)</p>
+            )}
+            <Note>
+              β=1 为 FX 市场惯例(对数正态骨架,与 GK/BS 报价习惯一致);ρ 控制偏斜方向,与 RR 同号
+              (RR &gt; 0 → call 翼贵 → ρ &gt; 0);ν 控制微笑弯曲程度(对应 BF 凸性,ν→0 退化为平坦 σ ≡ α)。
+              校准:内层 α 由 ATM 方程精确解(二分),外层 (ρ,ν) 网格逐级细化拟合两翼;
+              三锚点与下表同源(ATM 用 DNS 行权价,25Δ 翼按所选 Δ 约定反解 K)。
+            </Note>
+          </Card>
+        </div>
+      )}
+
       <Card title="锚点行权价 Anchor Strikes">
         {model ? (
           <table className="w-full text-sm">
@@ -206,6 +380,7 @@ export default function SmileBuilder() {
                 <th className="py-1.5 font-normal">Δ</th>
                 <th className="py-1.5 text-right font-normal">σ</th>
                 <th className="py-1.5 text-right font-normal">行权价 K</th>
+                {sabr && <th className="py-1.5 text-right font-normal">SABR σ(K)</th>}
               </tr>
             </thead>
             <tbody className="font-mono">
@@ -215,6 +390,15 @@ export default function SmileBuilder() {
                   <td className="py-1.5 text-slate2">{r.delta}</td>
                   <td className="py-1.5 text-right text-cloud">{fmtPct(r.sigma, 3)}</td>
                   <td className="py-1.5 text-right text-cloud">{fmt(r.strike, 4)}</td>
+                  {sabr && (() => {
+                    const sv = sabr.sabrAt(r.strike);
+                    const hit = Number.isFinite(sv) && Math.abs(sv - r.sigma) < 1e-4;
+                    return (
+                      <td className={`py-1.5 text-right ${hit ? "text-forest" : "text-gold"}`} title={hit ? "与锚点 σ 复现(|Δσ| < 1bp 量级)" : "与锚点 σ 有偏差(10Δ 点为 SABR 外推,未参与校准)"}>
+                        {fmtPct(sv, 3)}
+                      </td>
+                    );
+                  })()}
                 </tr>
               ))}
             </tbody>

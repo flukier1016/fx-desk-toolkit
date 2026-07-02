@@ -2,12 +2,13 @@
  *  方法论:每个模型必须带"恒等式/极限/往返"三类不变量;自检面板一键全绿才可信。
  */
 import { Phi, PhiInv } from "./norm";
-import { gk, gkPrice, strikeFromDelta, atmStrike, type GKInputs } from "./gk";
+import { gk, gkPrice, strikeFromDelta, atmStrike, vanna, impliedVol, fwd, type GKInputs } from "./gk";
 import { smileNodes } from "./smile";
 import { knockIn, knockOut } from "./barrier";
 import { cashDigital, oneTouch, noTouch } from "./digital";
 import { forwardRate, impliedRd } from "./cip";
 import { priceStrategy } from "./strategy";
+import { sabrVol, calibrateSabr } from "./sabr";
 
 export interface CheckResult { name: string; pass: boolean; detail: string; }
 
@@ -54,5 +55,23 @@ export function runSelfTests(): CheckResult[] {
     ];
     const s = priceStrategy(legs, { S: 7.2, rd: 0.019, rf: 0.043, T: 0.25 });
     out.push(ok("策略=Σ腿(跨式)", s.price - (gkPrice("call", b) + gkPrice("put", b)), 1e-12)); }
+  // 13. vanna 有限差分对拍
+  { const h = 1e-5;
+    const up = gk("call", { ...b, sigma: b.sigma + h }).deltaSpot;
+    const dn = gk("call", { ...b, sigma: b.sigma - h }).deltaSpot;
+    out.push(ok("vanna ≡ ∂Δ/∂σ(对拍)", vanna(b) - (up - dn) / (2 * h), 1e-4)); }
+  // 14. 隐含波动率价格往返
+  { const price = gkPrice("call", b);
+    const iv = impliedVol("call", price, b.S, b.K, b.rd, b.rf, b.T);
+    out.push(ok("隐含σ 价格往返", gkPrice("call", { ...b, sigma: iv }) - price, 1e-10)); }
+  // 15. SABR 三点校准锚点复现
+  { const atm = 0.055, rr = 0.008, bf = 0.003;
+    const sigC = atm + bf + rr / 2, sigP = atm + bf - rr / 2;
+    const F = fwd(b.S, b.rd, b.rf, b.T);
+    const Katm = atmStrike("dns", b.S, b.rd, b.rf, atm, b.T);
+    const Kc = strikeFromDelta("call", 0.25, b.S, b.rd, b.rf, sigC, b.T, "spot");
+    const Kp = strikeFromDelta("put", 0.25, b.S, b.rd, b.rf, sigP, b.T, "spot");
+    const { params } = calibrateSabr({ F, T: b.T, Katm, sigAtm: atm, Kp, sigP, Kc, sigC });
+    out.push(ok("SABR 校准复现 25ΔC 锚点", sabrVol(F, Kc, b.T, params) - sigC, 5e-4)); }
   return out;
 }

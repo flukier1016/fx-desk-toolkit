@@ -1,12 +1,16 @@
 /** 策略构建器 Strategy Builder —— 多腿期权组合:预设载入、腿编辑、净希腊字母、到期损益图
  *  市场参数(S/rd/rf/σ/T/名义)取全局 MarketBar;本地只管腿(K/qty/σ per leg)。
+ *  v3:可选「各腿取微笑 σ(SABR)」——ATM/RR25/BF25 三点校准 SABR(同 SmileBuilder 口径),
+ *      每条腿 σ 自动 = sabrVol(F, K_leg, T, params),行权价改动即联动;关闭恢复手动腿 σ。
  */
 import { useEffect, useMemo, useState } from "react";
 import { useMarket } from "../state/market";
 import { pairConv } from "../lib/conventions";
 import { priceStrategy, payoffCurve, preset, type Leg, type PresetId } from "../lib/strategy";
-import type { CP } from "../lib/gk";
-import { Card, Row, Note, fmt } from "../components/ui";
+import { fwd, type CP, type DeltaConv } from "../lib/gk";
+import { sabrVol, calibrateSabr } from "../lib/sabr";
+import { smileStrikes, type SmileQuotes } from "../lib/smile";
+import { Card, Field, Row, Note, fmt } from "../components/ui";
 
 interface LegRow { id: number; cp: CP; K: number; qty: number; sigmaPct: number; label?: string; }
 
@@ -54,6 +58,33 @@ export default function StrategyBuilder() {
   });
   const [active, setActive] = useState<PresetId | null>(null);
 
+  // ---- 微笑 σ(SABR)开关:ATM/RR25/BF25 → 锚点 K(同 SmileBuilder 各自 σ 反解)→ 校准 SABR ----
+  const [useSmile, setUseSmile] = useState(false);
+  const [atmPct, setAtmPct] = useState(() => mkt.sigma * 100);
+  const [rr25Pct, setRr25Pct] = useState(0.8);
+  const [bf25Pct, setBf25Pct] = useState(0.3);
+
+  const smile = useMemo(() => {
+    if (!useSmile) return null;
+    const raw = [atmPct, rr25Pct, bf25Pct, mkt.S, mkt.rd, mkt.rf, mkt.T];
+    if (raw.some((v) => !Number.isFinite(v)) || mkt.S <= 0 || mkt.T <= 0 || atmPct <= 0) return null;
+    const q: SmileQuotes = { atm: atmPct / 100, rr25: rr25Pct / 100, bf25: bf25Pct / 100 };
+    const dConv: DeltaConv = conv.premiumAdjusted ? "pa-spot" : "spot";
+    const rows = smileStrikes(q, mkt.S, mkt.rd, mkt.rf, mkt.T, dConv); // ATM=DNS,翼用各自 σ 反解 K
+    const atmR = rows.find((r) => r.label === "ATM");
+    const pR = rows.find((r) => r.label === "25ΔP");
+    const cR = rows.find((r) => r.label === "25ΔC");
+    if (!atmR || !pR || !cR) return null;
+    const F = fwd(mkt.S, mkt.rd, mkt.rf, mkt.T);
+    const { params, rmse } = calibrateSabr({
+      F, T: mkt.T,
+      Katm: atmR.strike, sigAtm: atmR.sigma,
+      Kp: pR.strike, sigP: pR.sigma,
+      Kc: cR.strike, sigC: cR.sigma,
+    });
+    return { F, params, rmse };
+  }, [useSmile, atmPct, rr25Pct, bf25Pct, mkt.S, mkt.rd, mkt.rf, mkt.T, conv.premiumAdjusted]);
+
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(legs.map(({ cp, K, qty, sigmaPct, label }) => ({ cp, K, qty, sigmaPct, label }))));
@@ -61,8 +92,14 @@ export default function StrategyBuilder() {
   }, [legs]);
 
   const loadPreset = (id: PresetId) => {
-    const ls = preset(id, { S: mkt.S, rd: mkt.rd, rf: mkt.rf, T: mkt.T }, mkt.sigma);
-    setLegs(ls.map((l) => ({ id: uid(), cp: l.cp, K: roundK(l.K), qty: l.qty, sigmaPct: l.sigma * 100, label: l.label })));
+    // 微笑开启:用微笑 ATM σ 反推行权价,再按各腿 K 取微笑 σ 重算;关闭:统一市场 ATM σ(教学口径)
+    const baseSigma = smile ? atmPct / 100 : mkt.sigma;
+    const ls = preset(id, { S: mkt.S, rd: mkt.rd, rf: mkt.rf, T: mkt.T }, baseSigma);
+    setLegs(ls.map((l) => {
+      const K = roundK(l.K);
+      const sig = smile ? sabrVol(smile.F, K, mkt.T, smile.params) : l.sigma;
+      return { id: uid(), cp: l.cp, K, qty: l.qty, sigmaPct: (Number.isFinite(sig) ? sig : l.sigma) * 100, label: l.label };
+    }));
     setActive(id);
   };
   const upd = (id: number, patch: Partial<LegRow>, dropLabel = true) => {
@@ -75,14 +112,21 @@ export default function StrategyBuilder() {
     setLegs((ls) => [...ls, { id: uid(), cp: "call", K: roundK(mkt.S), qty: 1, sigmaPct: mkt.sigma * 100 }]);
   };
 
-  // ---- 引擎腿 + 组合定价 ----
+  // ---- 引擎腿 + 组合定价(微笑开启:σ 自动 = sabrVol(F, K_leg, T),随 K 联动)----
   const engineLegs: Leg[] = useMemo(
-    () => legs.map((l) => ({ cp: l.cp, K: l.K, qty: l.qty, sigma: l.sigmaPct / 100, label: l.label })),
-    [legs],
+    () => legs.map((l) => ({
+      cp: l.cp, K: l.K, qty: l.qty,
+      sigma: smile && l.K > 0 ? sabrVol(smile.F, l.K, mkt.T, smile.params) : l.sigmaPct / 100,
+      label: l.label,
+    })),
+    [legs, smile, mkt.T],
   );
+  const sigmaOk = useSmile
+    ? smile !== null && engineLegs.every((l) => Number.isFinite(l.sigma) && l.sigma > 0)
+    : legs.every((l) => Number.isFinite(l.sigmaPct) && l.sigmaPct > 0);
   const ok =
-    legs.length > 0 && mkt.S > 0 && mkt.T > 0 &&
-    legs.every((l) => Number.isFinite(l.K) && l.K > 0 && Number.isFinite(l.sigmaPct) && l.sigmaPct > 0 && Number.isFinite(l.qty));
+    legs.length > 0 && mkt.S > 0 && mkt.T > 0 && sigmaOk &&
+    legs.every((l) => Number.isFinite(l.K) && l.K > 0 && Number.isFinite(l.qty));
   const res = useMemo(
     () => (ok ? priceStrategy(engineLegs, { S: mkt.S, rd: mkt.rd, rf: mkt.rf, T: mkt.T }) : null),
     [ok, engineLegs, mkt.S, mkt.rd, mkt.rf, mkt.T],
@@ -117,6 +161,28 @@ export default function StrategyBuilder() {
   const toneOf = (x: number): "pos" | "neg" => (x >= 0 ? "pos" : "neg");
   const num = (v: number) => (Number.isFinite(v) ? v : "");
 
+  // ---- 腿明细 TSV 复制 ----
+  const [copied, setCopied] = useState(false);
+  const copyTsv = () => {
+    if (!res) return;
+    const header = ["标签", "CP", "K", "qty", "σ(%)", "单腿价", "qty×价"].join("\t");
+    const lines = res.legs.map((x) =>
+      [
+        x.leg.label ?? `${x.leg.qty >= 0 ? "买" : "卖"} ${x.leg.cp === "call" ? "Call" : "Put"} @${fmt(x.leg.K, prec)}`,
+        x.leg.cp,
+        x.leg.K.toFixed(prec),
+        String(x.leg.qty),
+        (x.leg.sigma * 100).toFixed(4),
+        x.r.price.toFixed(6),
+        (x.leg.qty * x.r.price).toFixed(6),
+      ].join("\t"),
+    );
+    navigator.clipboard.writeText([header, ...lines].join("\n")).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 2000); },
+      () => { /* 剪贴板不可用 */ },
+    );
+  };
+
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       {/* ---- 腿编辑 ---- */}
@@ -134,10 +200,32 @@ export default function StrategyBuilder() {
           ))}
         </div>
 
+        <label className="mb-2 flex cursor-pointer items-center gap-2 text-xs text-slate2">
+          <input
+            type="checkbox" checked={useSmile} onChange={(e) => setUseSmile(e.target.checked)}
+            className="accent-gold"
+          />
+          各腿取微笑 σ(SABR)—— ATM/RR/BF 三点校准,腿 σ 自动 = sabrVol(F, K<sub>腿</sub>, T)
+        </label>
+        {useSmile && (
+          <div className="mb-3 rounded-md border border-line/60 bg-panel2/40 p-2.5">
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="ATM σ" value={atmPct} onChange={setAtmPct} step="0.1" suffix="%" min={0.01} />
+              <Field label="25Δ RR" value={rr25Pct} onChange={setRr25Pct} step="0.05" suffix="%" />
+              <Field label="25Δ BF" value={bf25Pct} onChange={setBf25Pct} step="0.05" suffix="%" />
+            </div>
+            <p className="mt-2 font-mono text-[11px] text-slate2">
+              {smile
+                ? `SABR(β=1): α=${smile.params.alpha.toFixed(4)}  ρ=${smile.params.rho.toFixed(3)}  ν=${smile.params.nu.toFixed(3)} · 校准RMSE=${(smile.rmse * 1e4).toFixed(2)}bp · F=${fmt(smile.F, prec)}`
+                : "微笑输入无效:ATM σ 需为正,RR/BF 需为有效数字(且顶部 S、T > 0)"}
+            </p>
+          </div>
+        )}
+
         <div className="grid grid-cols-[1fr_1.2fr_1fr_1fr_auto] items-center gap-2 border-b border-line/60 pb-1 text-[11px] text-slate2">
-          <span>类型 CP</span><span>行权价 K</span><span>数量 qty(+买 −卖)</span><span>σ(%)</span><span />
+          <span>类型 CP</span><span>行权价 K</span><span>数量 qty(+买 −卖)</span><span>σ(%){useSmile ? " · 微笑自动" : ""}</span><span />
         </div>
-        {legs.map((l) => (
+        {legs.map((l, i) => (
           <div key={l.id} className="grid grid-cols-[1fr_1.2fr_1fr_1fr_auto] items-center gap-2 py-1.5">
             <select
               value={l.cp} onChange={(e) => upd(l.id, { cp: e.target.value as CP })}
@@ -150,8 +238,18 @@ export default function StrategyBuilder() {
               onChange={(e) => upd(l.id, { K: parseFloat(e.target.value) })} aria-label="行权价 K" />
             <input type="number" step="1" value={num(l.qty)} className={inputCls}
               onChange={(e) => upd(l.id, { qty: parseFloat(e.target.value) })} aria-label="数量 qty" />
-            <input type="number" step="0.1" min={0} value={num(l.sigmaPct)} className={inputCls}
-              onChange={(e) => upd(l.id, { sigmaPct: parseFloat(e.target.value) }, false)} aria-label="波动率 %" />
+            {useSmile ? (
+              <div
+                className="w-full rounded-md border border-line/60 bg-panel2/50 px-2 py-1 font-mono text-xs text-gold"
+                title="微笑自动 σ = sabrVol(F, K, T)——只读,随行权价 K 联动;关闭开关恢复手动"
+                aria-label="波动率 %(微笑自动,只读)"
+              >
+                {Number.isFinite(engineLegs[i]?.sigma ?? NaN) ? ((engineLegs[i]!.sigma) * 100).toFixed(2) : "—"}
+              </div>
+            ) : (
+              <input type="number" step="0.1" min={0} value={num(l.sigmaPct)} className={inputCls}
+                onChange={(e) => upd(l.id, { sigmaPct: parseFloat(e.target.value) }, false)} aria-label="波动率 %" />
+            )}
             <button
               type="button" onClick={() => del(l.id)} title="删除该腿"
               className="rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-slate2 transition-colors hover:border-crimson hover:text-crimson"
@@ -168,6 +266,7 @@ export default function StrategyBuilder() {
         </button>
         <Note>
           S={fmt(mkt.S, prec)}、rd/rf/T/σ(ATM)与名义由顶部 MarketBar 统一设置;此处只编辑各腿 K / 数量 / 腿 σ。qty 为正=买入(付权利金),为负=卖出(收权利金)。
+          开启「各腿取微笑 σ(SABR)」后为<b>市场一致</b>定价口径:σ 列变为只读自动值,每条腿 σ = sabrVol(F, K<sub>腿</sub>, T),改 K 即联动重算;关闭恢复手动腿 σ。
         </Note>
       </Card>
 
@@ -229,12 +328,26 @@ export default function StrategyBuilder() {
             <text x={PAD.l} y={12} className="fill-slate2 font-mono" fontSize="10">横轴 S_T,纵轴到期 PnL(终值口径,权利金不折现)</text>
           </svg>
         ) : (
-          <p className="py-12 text-center text-xs text-slate2">腿参数无效 —— 需至少 1 条腿且各腿 K &gt; 0、σ &gt; 0(顶部 S、T &gt; 0)</p>
+          <p className="py-12 text-center text-xs text-slate2">
+            腿参数无效 —— 需至少 1 条腿且各腿 K &gt; 0、σ &gt; 0(顶部 S、T &gt; 0){useSmile ? ";微笑开启时另需 ATM/RR/BF 三点输入有效" : ""}
+          </p>
         )}
       </Card>
 
       {/* ---- 腿明细 ---- */}
       <Card title="腿明细 Leg Detail" className="lg:col-span-3">
+        {res && (
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button" onClick={copyTsv}
+              className={`rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                copied ? "border-forest text-forest" : "border-line bg-panel2 text-slate2 hover:border-gold hover:text-gold"
+              }`}
+            >
+              {copied ? "✓ 已复制" : "复制 TSV"}
+            </button>
+          </div>
+        )}
         {res ? (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -268,7 +381,11 @@ export default function StrategyBuilder() {
           <p className="py-6 text-center text-xs text-slate2">无有效腿</p>
         )}
         <Note>
-          预设按<b>统一 σ</b>(市场 ATM 波动率)反推 25Δ/DNS 行权价并定价,为教学口径;实盘每条腿应取 smile 上各自的 σ(25ΔP、25ΔC、ATM 各不相同——RR/BF 报价正是对偏度与曲率定价)。
+          {useSmile ? (
+            <>已开启<b>微笑 σ(SABR)</b>,为<b>市场一致</b>定价口径:预设按钮亦按各自 K 取微笑 σ 重算,每条腿 σ 各不相同(25ΔP、ATM、25ΔC)——RR/BF 对偏度与曲率的定价已进入每条腿。</>
+          ) : (
+            <>预设按<b>统一 σ</b>(市场 ATM 波动率)反推 25Δ/DNS 行权价并定价,为教学口径;实盘每条腿应取 smile 上各自的 σ(25ΔP、25ΔC、ATM 各不相同——RR/BF 报价正是对偏度与曲率定价),可开启上方「各腿取微笑 σ(SABR)」开关切到市场一致口径。</>
+          )}
           <span className="text-crimson"> 风险提示:卖出期权(qty&lt;0)收取的权利金有限,而名义风险不对称——大幅穿越行权价时亏损可远超所收权利金(海鸥/RR 中的空腿同理),务必按名义放大后评估最坏情形并预留保证金。</span>
         </Note>
       </Card>

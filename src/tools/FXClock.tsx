@@ -1,6 +1,7 @@
 /** 24 小时外汇时钟 —— 纯本地时间,无网络。北京时间大钟 + 全球 session 时间带 + 关键时点倒计时 */
 import { useEffect, useState } from "react";
 import { Card, Note, Row } from "../components/ui";
+import { useMarket } from "../state/market";
 
 /* ── 数据定义(北京时间,夏令时口径) ── */
 type Seg = { a: number; b: number };
@@ -81,6 +82,7 @@ const PL = 70, PW = 870; // 左留白 / 绘图宽
 const X = (h: number) => PL + (h / 24) * PW;
 
 export default function FXClock() {
+  const { mkt } = useMarket();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -109,7 +111,12 @@ export default function FXClock() {
       {/* ── 大数字时钟 ── */}
       <Card>
         <div className="text-center">
-          <div className="text-xs tracking-widest text-slate2">北京时间 BEIJING · UTC+8</div>
+          <div className="flex items-center justify-center gap-2">
+            <span className="rounded-full border border-gold/40 bg-gold/10 px-2.5 py-0.5 font-mono text-[11px] font-semibold tracking-wider text-gold">
+              {mkt.pair}
+            </span>
+            <span className="text-xs tracking-widest text-slate2">北京时间 BEIJING · UTC+8</span>
+          </div>
           <div className="mt-1 font-mono text-5xl font-bold tabular-nums tracking-wider text-gold md:text-6xl">
             {p2(H)}:{p2(M)}:{p2(S)}
           </div>

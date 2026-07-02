@@ -25,3 +25,13 @@ body {
 input, select { color-scheme: dark; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 4px; }
+
+/* 浅色主题(令牌覆写) */
+[data-theme="light"] {
+  --color-ink: #f3f5f8;
+  --color-panel: #ffffff;
+  --color-panel2: #eef2f6;
+  --color-line: #d4dde6;
+  --color-cloud: #22384e;
+  --color-slate2: #5b7288;
+}

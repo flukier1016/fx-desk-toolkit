@@ -1,10 +1,13 @@
 /** 每日 PnL 归因 —— 模式A:手动输入 Greeks;模式B:期权自动(gk 算 Greeks + 全重估出 residual)。
  *  输出:SVG 瀑布图(Δ/Γ/Vega/Θ/Carry 正绿负红,Explained/Total/Residual 标注)+ 明细 Row。
+ *  v2:接入全局市场状态 useMarket——模式B的 before 直接用 mkt(S/rd/rf/σ/T),K 留本地;名义用 mkt.notional。
  */
 import { useMemo, useState } from "react";
 import { gk, gkPrice, type CP, type GKInputs } from "../lib/gk";
 import { pnlAttribution } from "../lib/pnl";
-import { Card, Field, Select, Row, Note, fmt } from "../components/ui";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
+import { Card, Field, Select, Row, Note, fmt, fmtPct } from "../components/ui";
 
 type Mode = "manual" | "option";
 
@@ -13,6 +16,8 @@ interface Bar { label: string; value: number; from: number; to: number; kind: "f
 const signed = (x: number, d = 0) => (x >= 0 ? "+" : "") + fmt(x, d);
 
 export default function PnLAttrib() {
+  const { mkt } = useMarket();
+  const conv = pairConv(mkt.pair);
   const [mode, setMode] = useState<Mode>("manual");
 
   // ── 模式A:手动 Greeks(每 1 名义)──
@@ -22,20 +27,15 @@ export default function PnLAttrib() {
   const [mThetaDay, setMThetaDay] = useState(-0.00022);
   const [mCarryDay, setMCarryDay] = useState(0);
 
-  // ── 模式B:期权(GK)──
+  // ── 模式B:期权(GK)—— S/rd/rf/σ/T 来自全局市场状态,仅 K 为工具特有参数 ──
   const [cp, setCp] = useState<CP>("call");
-  const [S, setS] = useState(7.2);
-  const [K, setK] = useState(7.2);
-  const [rdPct, setRdPct] = useState(1.9);
-  const [rfPct, setRfPct] = useState(4.3);
-  const [sigPct, setSigPct] = useState(5.5);
-  const [T, setT] = useState(0.25);
+  const [K, setK] = useState(() => mkt.S);
 
   // ── 市场变动 ──
   const [dS, setDS] = useState(-0.02);
   const [dSigPct, setDSigPct] = useState(0.3);
   const [days, setDays] = useState(1);
-  const [notional, setNotional] = useState(1_000_000);
+  const notional = mkt.notional;
 
   const res = useMemo(() => {
     const dSigma = dSigPct / 100;
@@ -46,15 +46,15 @@ export default function PnLAttrib() {
       });
       return { bd, greeks: null as ReturnType<typeof gk> | null, beforePrice: NaN, afterPrice: NaN };
     }
-    const before: GKInputs = { S, K, rd: rdPct / 100, rf: rfPct / 100, sigma: sigPct / 100, T };
-    const after: GKInputs = { ...before, S: S + dS, sigma: before.sigma + dSigma, T: Math.max(T - days / 365, 0) };
+    const before: GKInputs = { S: mkt.S, K, rd: mkt.rd, rf: mkt.rf, sigma: mkt.sigma, T: mkt.T };
+    const after: GKInputs = { ...before, S: before.S + dS, sigma: before.sigma + dSigma, T: Math.max(before.T - days / 365, 0) };
     const g = gk(cp, before);
     const bd = pnlAttribution(
       { delta: g.deltaSpot, gamma: g.gamma, vega: g.vega, thetaDay: g.thetaDay, dS, dSigma, days, notional },
       { cp, before, after },
     );
     return { bd, greeks: g, beforePrice: g.price, afterPrice: gkPrice(cp, after) };
-  }, [mode, mDelta, mGamma, mVega, mThetaDay, mCarryDay, cp, S, K, rdPct, rfPct, sigPct, T, dS, dSigPct, days, notional]);
+  }, [mode, mDelta, mGamma, mVega, mThetaDay, mCarryDay, cp, K, mkt.S, mkt.rd, mkt.rf, mkt.sigma, mkt.T, dS, dSigPct, days, notional]);
 
   const bars = useMemo<Bar[]>(() => {
     const b = res.bd;
@@ -116,17 +116,25 @@ export default function PnLAttrib() {
                 <Field label="Carry / 日(可选)" value={mCarryDay} onChange={setMCarryDay} step="0.0001" />
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
-                <Select<CP>
-                  label="期权类型 CP" value={cp} onChange={setCp}
-                  options={[{ value: "call", label: "Call 看涨" }, { value: "put", label: "Put 看跌" }]}
-                />
-                <Field label="即期 S" value={S} onChange={setS} step="0.01" />
-                <Field label="行权价 K" value={K} onChange={setK} step="0.01" />
-                <Field label="本币利率 rd" value={rdPct} onChange={setRdPct} step="0.1" suffix="%" />
-                <Field label="外币利率 rf" value={rfPct} onChange={setRfPct} step="0.1" suffix="%" />
-                <Field label="波动率 σ" value={sigPct} onChange={setSigPct} step="0.1" suffix="%" />
-                <Field label="期限 T" value={T} onChange={setT} step="0.05" suffix="年" min={0.001} />
+              <div className="grid gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <Select<CP>
+                    label="期权类型 CP" value={cp} onChange={setCp}
+                    options={[{ value: "call", label: "Call 看涨" }, { value: "put", label: "Put 看跌" }]}
+                  />
+                  <Field label="行权价 K" value={K} onChange={setK} step="0.01" />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setK(mkt.S)}
+                  className="w-fit rounded border border-line px-2 py-1 text-xs text-slate2 hover:text-cloud hover:border-gold"
+                >
+                  K = 即期 S({fmt(mkt.S, conv.spotPrecision)})
+                </button>
+                <Note>
+                  市场参数取自顶部 MarketBar:{mkt.pair} · S={fmt(mkt.S, conv.spotPrecision)} ·
+                  rd={fmtPct(mkt.rd, 2)} · rf={fmtPct(mkt.rf, 2)} · σ={fmtPct(mkt.sigma, 2)} · T={fmt(mkt.T, 3)}年。
+                </Note>
               </div>
             )}
           </div>
@@ -136,7 +144,7 @@ export default function PnLAttrib() {
               <Field label="即期变动 dS" value={dS} onChange={setDS} step="0.01" />
               <Field label="波动率变动 dσ" value={dSigPct} onChange={setDSigPct} step="0.05" suffix="vol点(%)" />
               <Field label="经过天数 days" value={days} onChange={setDays} step="1" min={0} suffix="天" />
-              <Field label="名义 Notional(外币)" value={notional} onChange={setNotional} step="100000" min={0} />
+              <Row k={`名义 Notional(${conv.base})`} hint="取自 MarketBar" v={fmt(notional, 0)} />
             </div>
             <Note>
               泰勒分解:PnL ≈ Δ·dS + ½Γ·dS² + Vega·dσ + θ·days + Carry·days。

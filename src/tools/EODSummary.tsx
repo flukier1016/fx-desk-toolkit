@@ -1,6 +1,8 @@
 /** 当日小结生成器 —— 发给带教的每日小结(《作战指南》模板),草稿自动存 localStorage */
 import { useEffect, useRef, useState } from "react";
 import { Card, Note } from "../components/ui";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
 
 type Draft = {
   date: string; // YYYY-MM-DD
@@ -44,10 +46,10 @@ function loadDraft(): Draft {
   }
 }
 
-function buildText(d: Draft): string {
+function buildText(d: Draft, mktTag: string): string {
   const parts = d.date.split("-");
   const md = parts.length === 3 ? `${parts[1]}/${parts[2]}` : d.date;
-  const lines: string[] = [`【当日小结·${md}】`];
+  const lines: string[] = [`【当日小结·${md}】(${mktTag})`];
   const sec = (tag: string, body: string) => {
     const t = body.trim();
     if (t) lines.push(`■ ${tag}:${t}`);
@@ -84,6 +86,7 @@ function TArea({
 }
 
 export default function EODSummary() {
+  const { mkt } = useMarket();
   const [draft, setDraft] = useState<Draft>(loadDraft);
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
@@ -114,7 +117,9 @@ export default function EODSummary() {
     }
   };
 
-  const text = buildText(draft);
+  // 头部行情标签:即期取全局 mkt.S,按该货币对报价精度格式化,如 "USDCNY 7.2000"
+  const mktTag = `${mkt.pair} ${mkt.S.toFixed(pairConv(mkt.pair).spotPrecision)}`;
+  const text = buildText(draft, mktTag);
   const hasBody = text.includes("\n"); // 除标题外至少有一段
 
   const copy = async () => {

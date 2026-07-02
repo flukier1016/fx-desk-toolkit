@@ -1,5 +1,7 @@
-/** 掉期点与 CIP(抵补利率平价)计算器
- *  卡1:理论远期 —— 由 S / rd / rf / T 与计息约定推 F、掉期点、年化 carry
+/** 掉期点与 CIP(抵补利率平价)计算器 —— v2:接入全局市场状态
+ *  S / rd / rf / T 一律取自顶部 MarketBar(useMarket),本工具只留特有参数:
+ *  计息约定、pip 因子覆盖、市场 F / 市场掉期点。
+ *  卡1:理论远期 —— 由市场参数与计息约定推 F、掉期点、年化 carry(含期限曲线 SVG)
  *  卡2:市场反推 —— 由市场 F(或市场掉期点)反推 impliedRd / impliedRf / 交叉货币基差
  */
 import { useState } from "react";
@@ -7,31 +9,34 @@ import {
   forwardRate, swapPoints, impliedRd, impliedRf, impliedBasis, carry,
   type Compounding,
 } from "../lib/cip";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
 import { Card, Field, Select, Row, Note, fmt, fmtPct } from "../components/ui";
 
 type MktMode = "F" | "points";
 
 export default function CipCalc() {
-  // ---- 卡1:理论远期输入(利率用百分数,内部换算小数) ----
-  const [S, setS] = useState(7.2);
-  const [rdPct, setRdPct] = useState(1.9);
-  const [rfPct, setRfPct] = useState(4.3);
-  const [T, setT] = useState(0.25);
+  // ---- 全局市场状态(顶部 MarketBar 统一编辑) ----
+  const { mkt } = useMarket();
+  const conv = pairConv(mkt.pair);
+  const { S, rd, rf, T } = mkt;
+
+  // ---- 工具特有参数(本地 state) ----
   const [comp, setComp] = useState<Compounding>("simple");
-  const [pipFactor, setPipFactor] = useState(10000);
-
-  // ---- 卡2:市场反推输入 ----
-  const [mktMode, setMktMode] = useState<MktMode>("F");
-  const [mktF, setMktF] = useState(7.155);
-  const [mktPts, setMktPts] = useState(-450);
-
-  const rd = rdPct / 100;
-  const rf = rfPct / 100;
+  // pip 因子:默认自动取货币对约定;输入框留空(NaN)= 自动,填数 = 手动覆盖
+  const [pipOverride, setPipOverride] = useState<number>(NaN);
+  const pipAuto = !(Number.isFinite(pipOverride) && pipOverride >= 1);
+  const pipFactor = pipAuto ? conv.pipFactor : pipOverride;
 
   // 理论侧
   const F = forwardRate(S, rd, rf, T, comp);
   const pts = swapPoints(S, F, pipFactor);
   const cy = carry(rd, rf); // 年化利差 rd − rf
+
+  // ---- 卡2:市场反推输入(初值对齐当前理论值,可随时按钮重新对齐) ----
+  const [mktMode, setMktMode] = useState<MktMode>("F");
+  const [mktF, setMktF] = useState<number>(() => F);
+  const [mktPts, setMktPts] = useState<number>(() => pts);
 
   // 市场侧:两种输入方式统一成市场 F
   const Fmkt = mktMode === "F" ? mktF : S + mktPts / pipFactor;
@@ -61,15 +66,18 @@ export default function CipCalc() {
   const toneOf = (v: number): "pos" | "neg" | undefined =>
     !Number.isFinite(v) || v === 0 ? undefined : v > 0 ? "pos" : "neg";
 
+  const sp = conv.spotPrecision;
+
   return (
     <div className="grid gap-4 md:grid-cols-2">
       {/* ---------------- 卡1:理论远期 ---------------- */}
-      <Card title="卡1 · 理论远期 Theoretical Forward(CIP)">
+      <Card title={`卡1 · 理论远期 Theoretical Forward(CIP · ${mkt.pair})`}>
+        {/* 市场参数只读回显:编辑在顶部 MarketBar */}
+        <div className="mb-3 rounded-md border border-line/60 bg-panel2/40 px-2.5 py-1.5 font-mono text-xs text-slate2">
+          {mkt.pair} · S={fmt(S, sp)} · rd({conv.quote})={fmtPct(rd, 2)} · rf({conv.base})={fmtPct(rf, 2)} · T={fmt(T, 2)}y
+          <span className="ml-1 font-sans opacity-60">← 顶部 MarketBar 编辑</span>
+        </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="即期 S (USDCNY)" value={S} onChange={setS} step="0.001" min={0} />
-          <Field label="期限 T" value={T} onChange={setT} step="0.05" min={0} suffix="年" />
-          <Field label="本币利率 rd (CNY)" value={rdPct} onChange={setRdPct} step="0.1" suffix="%" />
-          <Field label="外币利率 rf (USD)" value={rfPct} onChange={setRfPct} step="0.1" suffix="%" />
           <Select<Compounding>
             label="计息约定 Compounding"
             value={comp}
@@ -79,18 +87,25 @@ export default function CipCalc() {
               { value: "continuous", label: "continuous · 连续复利" },
             ]}
           />
-          <Field label="pip 因子" value={pipFactor} onChange={setPipFactor} step="1" min={1} />
+          <Field
+            label={`pip 因子(自动=${conv.pipFactor},填数覆盖)`}
+            value={pipOverride}
+            onChange={setPipOverride}
+            step="1"
+            min={1}
+            suffix={pipAuto ? "auto" : "手动"}
+          />
         </div>
         <div className="mt-3">
-          <Row k="理论远期 F" hint={comp === "simple" ? "S·(1+rd·T)/(1+rf·T)" : "S·e^{(rd−rf)T}"} v={fmt(F, 4)} tone="gold" />
-          <Row k="掉期点 Swap Points" hint="(F−S)×pip" v={fmt(pts, 1) + " pips"} tone={toneOf(pts)} />
+          <Row k="理论远期 F" hint={comp === "simple" ? "S·(1+rd·T)/(1+rf·T)" : "S·e^{(rd−rf)T}"} v={fmt(F, sp)} tone="gold" />
+          <Row k="掉期点 Swap Points" hint={`(F−S)×${pipFactor}`} v={fmt(pts, 1) + " pips"} tone={toneOf(pts)} />
           <Row k="年化 carry" hint="rd − rf" v={fmtPct(cy, 3)} tone={toneOf(cy)} />
           <Row k="掉期点年化" hint="(F/S−1)/T ≈ 利差" v={T > 0 ? fmtPct((F / S - 1) / T, 3) : "—"} />
         </div>
 
         {/* 掉期点期限曲线(手写内联 SVG) */}
         <div className="mt-3 rounded-md border border-line/60 bg-panel2/40 p-2">
-          <div className="mb-1 text-xs text-slate2">掉期点 vs 期限(0–1 年,当前参数)</div>
+          <div className="mb-1 text-xs text-slate2">掉期点 vs 期限(0–1 年,当前市场参数)</div>
           <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
             {/* 零轴 */}
             <line x1={L} y1={y(0)} x2={W - R} y2={y(0)} className="stroke-line" strokeDasharray="4 4" />
@@ -140,11 +155,19 @@ export default function CipCalc() {
             <Field label="市场掉期点" value={mktPts} onChange={setMktPts} step="10" suffix="pips" />
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => { setMktF(F); setMktPts(pts); }}
+          className="mt-2 rounded-md border border-line bg-panel2 px-2 py-1 text-xs text-slate2 hover:border-gold hover:text-gold"
+          title="切换货币对/改动市场参数后,把市场输入重新对齐到当前理论值"
+        >
+          ↺ 对齐理论值(F={fmt(F, sp)})
+        </button>
         <div className="mt-3">
-          <Row k="市场远期 F(市场)" v={fmt(Fmkt, 4)} />
-          <Row k="市场掉期点" hint="(F市场−S)×pip" v={fmt(ptsMkt, 1) + " pips"} tone={toneOf(ptsMkt)} />
-          <Row k="隐含本币利率 implied rd" hint="给定 rf 反推" v={fmtPct(iRd, 3)} tone="gold" />
-          <Row k="隐含外币利率 implied rf" hint="给定 rd 反推" v={fmtPct(iRf, 3)} tone="gold" />
+          <Row k="市场远期 F(市场)" v={fmt(Fmkt, sp)} />
+          <Row k="市场掉期点" hint={`(F市场−S)×${pipFactor}`} v={fmt(ptsMkt, 1) + " pips"} tone={toneOf(ptsMkt)} />
+          <Row k={`隐含本币利率 implied rd (${conv.quote})`} hint="给定 rf 反推" v={fmtPct(iRd, 3)} tone="gold" />
+          <Row k={`隐含外币利率 implied rf (${conv.base})`} hint="给定 rd 反推" v={fmtPct(iRf, 3)} tone="gold" />
           <Row
             k="交叉货币基差 basis"
             hint="implied rd − rd"
@@ -159,11 +182,15 @@ export default function CipCalc() {
           />
         </div>
         <Note>
-          USDCNY 当下中美利差为负(rd 人民币 ≈ 1.9% &lt; rf 美元 ≈ 4.3%),CIP 之下远期必然
-          <span className="text-crimson">贴水</span>——掉期点为负;掉期点年化 (F/S−1)/T ≈ 利差 rd−rf。
-          若市场 F 偏离理论 F,反推出的 implied rd 与真实 rd 之差就是
-          <span className="text-gold">交叉货币基差</span>(bp),即 CIP 偏离:负基差意味着通过 FX
-          swap 借美元比直接货币市场借更贵,常见于美元融资紧张时。
+          当前 {mkt.pair}:{conv.quote} 利率 rd={fmtPct(rd, 2)}
+          {cy < 0 ? " 低于 " : cy > 0 ? " 高于 " : " 等于 "}
+          {conv.base} 利率 rf={fmtPct(rf, 2)},CIP 之下远期
+          {cy < 0 ? <span className="text-crimson">贴水(掉期点为负)</span>
+            : cy > 0 ? <span className="text-forest">升水(掉期点为正)</span>
+            : <span>≈ 即期</span>}
+          ;掉期点年化 (F/S−1)/T ≈ 利差 rd−rf。若市场 F 偏离理论 F,反推出的 implied rd 与真实 rd
+          之差就是<span className="text-gold">交叉货币基差</span>(bp),即 CIP 偏离:负基差意味着通过 FX
+          swap 借{conv.base}比直接货币市场借更贵,常见于{conv.base}融资紧张时。
         </Note>
       </Card>
     </div>

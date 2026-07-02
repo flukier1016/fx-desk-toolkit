@@ -1,12 +1,15 @@
 /** Delta ⇄ 行权价换算器
  *  模式A: delta(绝对值)+约定 → 行权价 K(含 ATMF / DNS 快捷键)
  *  模式B: 行权价 K → 四种 delta 约定对照表
+ *  市场参数(S/rd/rf/σ/T)统一来自顶部 MarketBar(useMarket),工具内不重复输入。
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   gk, fwd, strikeFromDelta, atmStrike,
   type CP, type DeltaConv,
 } from "../lib/gk";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
 import { Card, Field, Select, Row, Note, fmt, fmtPct } from "../components/ui";
 
 type Mode = "d2k" | "k2d";
@@ -26,23 +29,29 @@ const ATM_BTNS: { kind: AtmKind; label: string; hint: string }[] = [
 ];
 
 export default function DeltaStrike() {
+  // 全局市场状态(顶部 MarketBar 统一编辑)
+  const { mkt } = useMarket();
+  const { S, rd, rf, sigma, T } = mkt;
+  const pc = pairConv(mkt.pair);
+
   const [mode, setMode] = useState<Mode>("d2k");
-  // 市场参数 —— 利率/波动率以百分数输入
-  const [S, setS] = useState(7.2);
-  const [rdPct, setRdPct] = useState(1.9);
-  const [rfPct, setRfPct] = useState(4.3);
-  const [volPct, setVolPct] = useState(5.5);
-  const [T, setT] = useState(0.25);
-  // 模式A
+  // 模式A —— 该对惯用 premium-adjusted 时默认选 pa-spot
   const [cp, setCp] = useState<CP>("call");
-  const [conv, setConv] = useState<DeltaConv>("spot");
+  const [conv, setConv] = useState<DeltaConv>(pc.premiumAdjusted ? "pa-spot" : "spot");
   const [deltaAbs, setDeltaAbs] = useState(0.25);
   const [atmKind, setAtmKind] = useState<AtmKind>("atmf");
   // 模式B
-  const [K, setK] = useState(7.29);
+  const [K, setK] = useState(() => Number((S * 1.0125).toFixed(pc.spotPrecision)));
 
-  const rd = rdPct / 100, rf = rfPct / 100, sigma = volPct / 100;
+  // 切换货币对 → 约定回到该对默认惯例,K 重置到新即期附近
+  useEffect(() => {
+    setConv(pc.premiumAdjusted ? "pa-spot" : "spot");
+    setK(Number((mkt.S * 1.0125).toFixed(pc.spotPrecision)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mkt.pair]);
+
   const F = fwd(S, rd, rf, T);
+  const px = Math.max(pc.spotPrecision, 4);
 
   // 模式A: delta → K
   // 注: 库中 pa 分支按 pa-spot 方程 (K/S)e^{-rd T}Φ(±d2)=Δ 求根;
@@ -97,28 +106,35 @@ export default function DeltaStrike() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {/* 市场参数(两种模式共用) */}
-        <Card title="市场参数 Market Inputs">
+        {/* 市场快照(只读,顶部 MarketBar 统一编辑)+ 工具本地参数 */}
+        <Card title={`市场快照 · ${mkt.pair}(顶栏编辑)`}>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="即期 S (USDCNY)" value={S} onChange={setS} step="0.01" min={0.0001} />
-            <Field label="到期 T" value={T} onChange={setT} step="0.05" min={0.001} suffix="年" />
-            <Field label="本币利率 rd (CNY)" value={rdPct} onChange={setRdPct} step="0.1" suffix="%" />
-            <Field label="外币利率 rf (USD)" value={rfPct} onChange={setRfPct} step="0.1" suffix="%" />
-            <Field label="波动率 σ" value={volPct} onChange={setVolPct} step="0.1" min={0.01} suffix="%" />
             <Select
               label="期权方向 CP"
               value={cp}
               onChange={setCp}
               options={[
-                { value: "call", label: "Call (买 USD / 卖 CNY)" },
-                { value: "put", label: "Put (卖 USD / 买 CNY)" },
+                { value: "call", label: `Call (买 ${pc.base} / 卖 ${pc.quote})` },
+                { value: "put", label: `Put (卖 ${pc.base} / 买 ${pc.quote})` },
               ]}
             />
           </div>
           <div className="mt-3">
-            <Row k="远期 F" hint="= S·e^{(rd−rf)T}" v={fmt(F)} tone="gold" />
-            <Row k="远期点 Swap Points" hint="×10⁴ pips" v={fmt((F - S) * 10000, 1)} tone={toneOf(F - S)} />
+            <Row k={`即期 S (${mkt.pair})`} v={fmt(S, px)} />
+            <Row k={`利率 rd (${pc.quote}) / rf (${pc.base})`} v={`${fmtPct(rd, 2)} / ${fmtPct(rf, 2)}`} />
+            <Row k="波动率 σ / 期限 T" v={`${fmtPct(sigma, 2)} / ${fmt(T, 3)} 年`} />
+            <Row k="远期 F" hint="= S·e^{(rd−rf)T}" v={fmt(F, px)} tone="gold" />
+            <Row
+              k="远期点 Swap Points"
+              hint={`×${pc.pipFactor} pips`}
+              v={fmt((F - S) * pc.pipFactor, 1)}
+              tone={toneOf(F - S)}
+            />
           </div>
+          <Note>
+            S / rd / rf / σ / T 来自顶部全局市场栏,改一处全站联动;本卡只读展示。
+            该对 delta 惯例:{pc.deltaConvNote}。
+          </Note>
         </Card>
 
         {mode === "d2k" ? (
@@ -131,10 +147,16 @@ export default function DeltaStrike() {
               />
               <Select label="Delta 约定 Convention" value={conv} onChange={setConv} options={CONV_OPTIONS} />
             </div>
+            {pc.premiumAdjusted && (
+              <div className="mt-2 rounded-md border border-gold/40 bg-gold/10 px-2.5 py-1.5 text-xs text-gold">
+                提示:{mkt.pair} 权利金以 {pc.base} 支付,市场惯用 premium-adjusted delta,
+                约定已默认 <b>PA 即期 Δ (pa-spot)</b>;如对手方用其他约定可手动切换。
+              </div>
+            )}
             <div className="mt-3">
               <Row
                 k={`行权价 K (${deltaAbs && Number.isFinite(deltaAbs) ? Math.round(deltaAbs * 100) : "—"}Δ ${cp === "call" ? "Call" : "Put"})`}
-                v={fmt(solvedK)}
+                v={fmt(solvedK, px)}
                 tone="gold"
               />
               <Row k="K / F (远期在值程度)" v={fmt(solvedK / F)} />
@@ -165,13 +187,13 @@ export default function DeltaStrike() {
                   </button>
                 ))}
               </div>
-              <Row k={`ATM 行权价 · ${atmBtn.label}`} hint={atmBtn.hint} v={fmt(atmK)} tone="gold" />
+              <Row k={`ATM 行权价 · ${atmBtn.label}`} hint={atmBtn.hint} v={fmt(atmK, px)} tone="gold" />
             </div>
 
             <Note>
               提醒:报价单上的 25Δ / 10Δ 是<b>波动率曲面的坐标</b>,不是某个固定行权价——同一个
               "25Δ" 在 spot / forward / premium-adjusted 四种约定下对应<b>不同的 K</b>,
-              询价时必须先对齐 delta 约定(USDCNY 等新兴市场对惯用 premium-adjusted)。
+              询价时必须先对齐 delta 约定(USDJPY 等权利金付外币的对惯用 premium-adjusted)。
               另注:pa call 的 Δ 对 K 非单调,本工具按市场惯例取右支(较高 K)。
             </Note>
           </Card>
@@ -179,7 +201,7 @@ export default function DeltaStrike() {
           /* 模式B: K → delta */
           <Card title="模式B · 行权价 K → Delta 对照">
             <div className="grid grid-cols-2 gap-3">
-              <Field label="行权价 K" value={K} onChange={setK} step="0.01" min={0.0001} />
+              <Field label="行权价 K" value={K} onChange={setK} step={String(100 / 10 ** pc.spotPrecision)} min={0.0001} />
             </div>
             <div className="mt-3">
               <Row k="即期 Spot Δ" hint="e^{−rf T}·Φ(±d1)" v={fmtPct(g.deltaSpot, 3)} tone={toneOf(g.deltaSpot)} />
@@ -188,7 +210,7 @@ export default function DeltaStrike() {
               <Row k="PA 远期 Δ" hint="±(K/F)Φ(±d2)" v={fmtPct(deltaPAFwd, 3)} tone={toneOf(deltaPAFwd)} />
             </div>
             <div className="mt-3">
-              <Row k="期权价 (CNY / 1 USD 名义)" v={fmt(g.price)} tone="gold" />
+              <Row k={`期权价 (${pc.quote} / 1 ${pc.base} 名义)`} v={fmt(g.price)} tone="gold" />
               <Row k="d1 / d2" v={`${fmt(g.d1)} / ${fmt(g.d2)}`} />
               <Row k="K / F" v={fmt(K / F)} />
             </div>
@@ -196,6 +218,7 @@ export default function DeltaStrike() {
               提醒:25Δ / 10Δ 只是<b>曲面坐标</b>——同一个 K 在四种约定下 delta 各不相同
               (上表即对照)。PA 约定把权利金(以外币支付)从对冲头寸中扣掉,故
               |Δ_pa| ≤ |Δ|,且 pa call delta 对 K 非单调;报价沟通前务必先说清用哪一列。
+              {pc.premiumAdjusted && <> 本对({mkt.pair})惯例即 premium-adjusted,对外报 Δ 默认看 PA 列。</>}
             </Note>
           </Card>
         )}

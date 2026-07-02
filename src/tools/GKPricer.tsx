@@ -1,7 +1,11 @@
-/** GK 定价器 —— Garman–Kohlhagen 欧式外汇期权:价格 + 全套希腊字母 + S 敏感性曲线 */
+/** GK 定价器 —— Garman–Kohlhagen 欧式外汇期权:价格 + 全套希腊字母 + S 敏感性曲线
+ *  v2:市场参数(S/rd/rf/σ/T/名义)统一取自全局 MarketBar(useMarket),本工具只留 K 与 Call/Put。
+ */
 import { useMemo, useState } from "react";
-import { gk, type CP, type GKInputs } from "../lib/gk";
-import { Card, Field, Row, Note, fmt } from "../components/ui";
+import { gk, fwd, type CP, type GKInputs } from "../lib/gk";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
+import { Card, Field, Row, Note, fmt, fmtPct } from "../components/ui";
 
 type Metric = "price" | "deltaSpot";
 
@@ -10,21 +14,21 @@ const W = 560, H = 260;
 const PAD = { l: 52, r: 14, t: 14, b: 30 };
 
 export default function GKPricer() {
+  const { mkt } = useMarket();
+  const conv = pairConv(mkt.pair);
+  const { S, rd, rf, sigma, T, notional } = mkt;
+
   const [cp, setCp] = useState<CP>("call");
-  const [S, setS] = useState(7.2);
-  const [K, setK] = useState(7.2);
-  const [rdPct, setRdPct] = useState(1.9);
-  const [rfPct, setRfPct] = useState(4.3);
-  const [sigmaPct, setSigmaPct] = useState(5.5);
-  const [T, setT] = useState(0.25);
-  const [notional, setNotional] = useState(1_000_000);
+  const [K, setK] = useState<number>(() => S); // 初值取当前市场即期
   const [metric, setMetric] = useState<Metric>("price");
 
+  const F = fwd(S, rd, rf, T);
+
   const inp: GKInputs = useMemo(
-    () => ({ S, K, rd: rdPct / 100, rf: rfPct / 100, sigma: sigmaPct / 100, T }),
-    [S, K, rdPct, rfPct, sigmaPct, T],
+    () => ({ S, K, rd, rf, sigma, T }),
+    [S, K, rd, rf, sigma, T],
   );
-  const ok = [S, K, rdPct, rfPct, sigmaPct, T].every(Number.isFinite) && S > 0 && K > 0 && sigmaPct > 0 && T > 0;
+  const ok = [S, K, rd, rf, sigma, T].every(Number.isFinite) && S > 0 && K > 0 && sigma > 0 && T > 0;
   const g = useMemo(() => (ok ? gk(cp, inp) : null), [ok, cp, inp]);
 
   // ---- SVG 采样: S ∈ [0.85S, 1.15S], 60 点 ----
@@ -71,33 +75,57 @@ export default function GKPricer() {
       {label}
     </button>
   );
+  const kBtn = (label: string, v: number, title: string) => (
+    <button
+      key={label} type="button" title={title}
+      onClick={() => setK(Number(v.toFixed(conv.spotPrecision + 2)))}
+      className="rounded-md border border-line bg-panel2 px-2 py-1 font-mono text-xs text-slate2 transition-colors hover:border-gold hover:text-gold"
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
+      {/* 顶部:当前货币对 + delta 惯例提示 */}
+      <p className="md:col-span-2 -mb-1 text-[11px] leading-relaxed text-slate2">
+        <span className="font-mono font-semibold text-gold">{mkt.pair}</span>
+        <span className="mx-1.5 opacity-60">|</span>
+        Delta 惯例: {conv.deltaConvNote}
+        <span className="mx-1.5 opacity-60">|</span>
+        S/rd/rf/σ/T/名义 由顶部 MarketBar 统一编辑
+      </p>
+
       <Card title="输入 Inputs">
         <div className="mb-3 flex gap-2">{cpBtn("call", "Call 看涨")}{cpBtn("put", "Put 看跌")}</div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="即期 S (Spot)" value={S} onChange={setS} step="0.01" min={0} />
+        <div className="grid grid-cols-2 items-end gap-3">
           <Field label="行权价 K (Strike)" value={K} onChange={setK} step="0.01" min={0} />
-          <Field label="本币利率 rd" value={rdPct} onChange={setRdPct} step="0.1" suffix="%" />
-          <Field label="外币利率 rf" value={rfPct} onChange={setRfPct} step="0.1" suffix="%" />
-          <Field label="波动率 σ" value={sigmaPct} onChange={setSigmaPct} step="0.1" suffix="%" min={0} />
-          <Field label="期限 T" value={T} onChange={setT} step="0.05" suffix="年" min={0} />
-          <div className="col-span-2">
-            <Field label="名义本金 Notional (外币)" value={notional} onChange={setNotional} step="100000" min={0} />
+          <div className="flex items-center gap-2 pb-1">
+            {kBtn("=S", S, `设 K = 即期 ${fmt(S, conv.spotPrecision)}`)}
+            {kBtn("=F", F, `设 K = 远期 ${fmt(F, conv.spotPrecision)}`)}
           </div>
         </div>
-        <Note>直接标价:1 外币 = S 本币(USDCNY: 外币=USD, 本币=CNY)。利率为连续复利,价格以本币计、每 1 单位外币名义。</Note>
+        <div className="mt-3 grid grid-cols-3 gap-x-3 gap-y-1 rounded-md border border-line/60 bg-panel2/50 px-3 py-2 font-mono text-[11px] text-slate2">
+          <span>S {fmt(S, conv.spotPrecision)}</span>
+          <span>rd {fmtPct(rd, 2)}</span>
+          <span>rf {fmtPct(rf, 2)}</span>
+          <span>σ {fmtPct(sigma, 2)}</span>
+          <span>T {fmt(T, 3)}y</span>
+          <span>F {fmt(F, conv.spotPrecision)}</span>
+        </div>
+        <Note>
+          直接标价:1 {conv.base} = S {conv.quote}(外币={conv.base}, 本币={conv.quote})。利率为连续复利,价格以本币计、每 1 单位外币名义。市场参数在顶部 MarketBar 修改。
+        </Note>
       </Card>
 
       <Card title="价格 Price">
-        <Row k="期权价格 price" hint="(本币 / 1外币名义)" v={fmt(g?.price ?? NaN, 6)} tone="gold" />
-        <Row k="远期 forward" hint="F = S·e^{(rd−rf)T}" v={fmt(g?.forward ?? NaN, 4)} />
+        <Row k="期权价格 price" hint={`(${conv.quote} / 1${conv.base}名义)`} v={fmt(g?.price ?? NaN, 6)} tone="gold" />
+        <Row k="远期 forward" hint="F = S·e^{(rd−rf)T}" v={fmt(g?.forward ?? NaN, conv.spotPrecision)} />
         <Row k="d1" v={fmt(g?.d1 ?? NaN, 4)} />
         <Row k="d2" v={fmt(g?.d2 ?? NaN, 4)} />
         <Row
-          k={`名义 ${Number.isFinite(notional) ? notional.toLocaleString("en-US") : "—"} 外币 → 总价`}
-          hint="(本币)"
+          k={`名义 ${Number.isFinite(notional) ? notional.toLocaleString("en-US") : "—"} ${conv.base} → 总价`}
+          hint={`(${conv.quote})`}
           v={fmt(g && Number.isFinite(notional) ? g.price * notional : NaN, 2)}
           tone="pos"
         />
@@ -108,7 +136,7 @@ export default function GKPricer() {
         <Row k="deltaFwd" hint="Φ(±d1), 对冲远期" v={fmt(g?.deltaFwd ?? NaN, 4)} />
         <Row k="deltaPA" hint="premium-adjusted, 权利金计入外币" v={fmt(g?.deltaPA ?? NaN, 4)} />
         <p className="mb-1 border-b border-line/50 pb-1.5 text-[11px] leading-relaxed text-slate2 opacity-80">
-          区别:spot delta 是对即期的敏感度;forward delta 折到远期(相差 e^{"{rf T}"} 因子);premium-adjusted 在权利金以外币支付时扣掉权利金自带的外币头寸(deltaPA = deltaSpot − price/S)。
+          区别:spot delta 是对即期的敏感度;forward delta 折到远期(相差 e^{"{rf T}"} 因子);premium-adjusted 在权利金以外币支付时扣掉权利金自带的外币头寸(deltaPA = deltaSpot − price/S)。当前 {mkt.pair} 惯例:{conv.premiumAdjusted ? "PA delta" : "spot delta"}。
         </p>
         <Row k="gamma" hint="∂²V/∂S²" v={fmt(g?.gamma ?? NaN, 4)} />
         <Row k="vega" hint="每 1% vol" v={fmt(g?.vegaPct ?? NaN, 6)} />
@@ -123,7 +151,7 @@ export default function GKPricer() {
           {mBtn("deltaSpot", "Delta (spot)")}
           {chart && (
             <span className="ml-auto font-mono text-xs text-slate2">
-              当前 S={fmt(S, 4)} → {metric === "price" ? fmt(chart.yCur, 6) : fmt(chart.yCur, 4)}
+              当前 S={fmt(S, conv.spotPrecision)} → {metric === "price" ? fmt(chart.yCur, 6) : fmt(chart.yCur, 4)}
             </span>
           )}
         </div>
@@ -159,7 +187,7 @@ export default function GKPricer() {
             </text>
           </svg>
         ) : (
-          <p className="py-10 text-center text-xs text-slate2">输入无效 —— 需 S, K, σ, T &gt; 0</p>
+          <p className="py-10 text-center text-xs text-slate2">输入无效 —— 需 S, K, σ, T &gt; 0(市场参数在 MarketBar 修改)</p>
         )}
         <Note>
           Premium-adjusted delta 用于权利金以外币(=基础货币)支付的货币对惯例(如 USDJPY、USDCNH 的 USD 计价权利金);USDCNY 场内报价常用 spot delta。对冲手数与行权价反推(strike-from-delta)都依赖该约定,以台子惯例为准。

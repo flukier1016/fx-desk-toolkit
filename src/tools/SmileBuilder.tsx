@@ -1,10 +1,13 @@
 /** 微笑曲线构建器 —— ATM / 25ΔRR / 25ΔBF (可选 10Δ) → σ(Δ) 曲线 + 锚点行权价
  *  x 轴 = 看涨等价 Δ (call-equivalent delta):左 = Call 翼(高 K),右 = Put 翼(低 K)
+ *  S/rd/rf/T 取自全局市场状态(顶部 MarketBar 编辑);ATM σ 本地可调,可一键写回全局。
  */
 import { useMemo, useState } from "react";
 import { smileNodes, smileStrikes, pchip, type SmileQuotes } from "../lib/smile";
 import type { DeltaConv } from "../lib/gk";
-import { Card, Field, Select, Note, fmt, fmtPct } from "../components/ui";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
+import { Card, Field, Select, Row, Note, fmt, fmtPct } from "../components/ui";
 
 const CONV_OPTS: { value: DeltaConv; label: string }[] = [
   { value: "spot", label: "Spot Δ" },
@@ -28,22 +31,24 @@ const X_TICKS: { x: number; label: string }[] = [
 ];
 
 export default function SmileBuilder() {
-  // 报价(百分数输入,内部换算小数)
-  const [atmPct, setAtmPct] = useState(5.5);
+  const { mkt, setMkt } = useMarket();
+  const conv0 = pairConv(mkt.pair);
+
+  // 报价(百分数输入,内部换算小数);ATM σ 初值取全局
+  const [atmPct, setAtmPct] = useState(() => mkt.sigma * 100);
   const [rr25Pct, setRr25Pct] = useState(1.2);
   const [bf25Pct, setBf25Pct] = useState(0.35);
   const [use10, setUse10] = useState(false);
   const [rr10Pct, setRr10Pct] = useState(2.1);
   const [bf10Pct, setBf10Pct] = useState(1.2);
-  // 市场参数
-  const [S, setS] = useState(7.2);
-  const [rdPct, setRdPct] = useState(1.9);
-  const [rfPct, setRfPct] = useState(4.3);
-  const [T, setT] = useState(0.25);
-  const [conv, setConv] = useState<DeltaConv>("spot");
+  // 工具特有:Δ 约定(初值随货币对惯例)
+  const [conv, setConv] = useState<DeltaConv>(() => (conv0.premiumAdjusted ? "pa-spot" : "spot"));
+
+  const { S, rd, rf, T } = mkt;
+  const atmOk = Number.isFinite(atmPct) && atmPct > 0;
 
   const model = useMemo(() => {
-    const raw = [atmPct, rr25Pct, bf25Pct, S, rdPct, rfPct, T, ...(use10 ? [rr10Pct, bf10Pct] : [])];
+    const raw = [atmPct, rr25Pct, bf25Pct, S, rd, rf, T, ...(use10 ? [rr10Pct, bf10Pct] : [])];
     if (raw.some((v) => !Number.isFinite(v)) || S <= 0 || T <= 0 || atmPct <= 0) return null;
 
     const q: SmileQuotes = {
@@ -72,16 +77,27 @@ export default function SmileBuilder() {
     const yTicks: number[] = [];
     for (let i = 0; i <= 4; i++) yTicks.push(yLo + ((yHi - yLo) * i) / 4);
 
-    const rows = smileStrikes(q, S, rdPct / 100, rfPct / 100, T, conv);
+    const rows = smileStrikes(q, S, rd, rf, T, conv);
     return { nodes, path, px, py, yTicks, rows };
-  }, [atmPct, rr25Pct, bf25Pct, use10, rr10Pct, bf10Pct, S, rdPct, rfPct, T, conv]);
+  }, [atmPct, rr25Pct, bf25Pct, use10, rr10Pct, bf10Pct, S, rd, rf, T, conv]);
 
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="微笑报价 Smile Quotes">
           <div className="grid grid-cols-3 gap-3">
-            <Field label="ATM σ" value={atmPct} onChange={setAtmPct} step="0.1" suffix="%" min={0.01} />
+            <div>
+              <Field label="ATM σ" value={atmPct} onChange={setAtmPct} step="0.1" suffix="%" min={0.01} />
+              <button
+                type="button"
+                disabled={!atmOk}
+                onClick={() => setMkt({ sigma: atmPct / 100 })}
+                title="将此 ATM σ 写回全局市场状态(所有工具联动)"
+                className="mt-1.5 rounded-md border border-line bg-panel2 px-2 py-0.5 text-[11px] text-slate2 transition-colors hover:border-gold hover:text-gold disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                写回全局 σ
+              </button>
+            </div>
             <Field label="25Δ RR" value={rr25Pct} onChange={setRr25Pct} step="0.05" suffix="%" />
             <Field label="25Δ BF" value={bf25Pct} onChange={setBf25Pct} step="0.05" suffix="%" />
           </div>
@@ -99,12 +115,13 @@ export default function SmileBuilder() {
             </div>
           )}
         </Card>
-        <Card title="市场参数 Market">
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            <Field label="即期 S" value={S} onChange={setS} step="0.01" min={0.0001} />
-            <Field label="本币利率 rd" value={rdPct} onChange={setRdPct} step="0.1" suffix="%" />
-            <Field label="外币利率 rf" value={rfPct} onChange={setRfPct} step="0.1" suffix="%" />
-            <Field label="期限 T" value={T} onChange={setT} step="0.05" suffix="年" min={0.001} />
+        <Card title="全局市场参数 Market(顶部 MarketBar 编辑)">
+          <Row k="货币对 Pair" v={mkt.pair} hint={`(${conv0.deltaConvNote})`} tone="gold" />
+          <Row k="即期 S" v={fmt(S, conv0.spotPrecision)} />
+          <Row k="本币利率 rd" v={fmtPct(rd, 2)} />
+          <Row k="外币利率 rf" v={fmtPct(rf, 2)} />
+          <Row k="期限 T" v={`${fmt(T, 3)} 年`} />
+          <div className="mt-3">
             <Select label="Δ 约定(反解 K 用)" value={conv} onChange={setConv} options={CONV_OPTS} />
           </div>
         </Card>
@@ -176,7 +193,7 @@ export default function SmileBuilder() {
             })}
           </svg>
         ) : (
-          <p className="py-8 text-center text-sm text-slate2">输入无效:请检查 S、T、ATM σ 为正且各报价为有效数字。</p>
+          <p className="py-8 text-center text-sm text-slate2">输入无效:请检查全局 S、T(顶部 MarketBar)与 ATM σ 为正且各报价为有效数字。</p>
         )}
       </Card>
 
@@ -210,6 +227,7 @@ export default function SmileBuilder() {
           RR 符号方向以货币对与市场惯例为准:USDCNY 中担忧人民币贬值 = 买 USD call(即买 USDCNY 看涨),
           需求推高看涨翼,通常 call 贵、RR &gt; 0。BF 衡量两翼相对 ATM 的凸性(尾部风险溢价)。
           ATM 锚点按 DNS(pips)约定取 K = F·exp(σ²T/2);翼锚点按所选 Δ 约定用各自 σ 反解 K。
+          S/rd/rf/T 来自全局市场状态;本地 ATM σ 可微调后点「写回全局 σ」同步给其他工具。
         </Note>
       </Card>
     </div>

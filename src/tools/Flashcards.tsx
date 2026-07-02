@@ -95,6 +95,16 @@ const DECK: FlashCard[] = [
     a: "B_adj = B·e^(±0.5826·σ·√(T/m))\nup 障碍上移 (+), down 障碍下移 (−)\nm = 观测次数, 0.5826 = ζ(1/2)/√(2π) 取负",
   },
   {
+    tag: "数字/触碰",
+    q: "Cash digital 对称关系: C_dig + P_dig = ?",
+    a: "C_dig + P_dig = e^(−rd·T)\n(付 1 本币, 到期 S>K 或 S≤K 必有一边付)\ncash digital call = e^(−rd·T)·Φ(d2) = −∂C_vanilla/∂K",
+  },
+  {
+    tag: "数字/触碰",
+    q: "One-touch 与 no-touch 的互补关系?",
+    a: "OT + NT = e^(−rd·T)  (到期付 1 本币)\n路径要么碰到 H 要么没碰到, 事件互补\nNT = e^(−rd·T)·(1 − P_hit)",
+  },
+  {
     tag: "随机分析",
     q: "反射原理公式?",
     a: "P(max_{t≤T} W_t ≥ a) = 2·P(W_T ≥ a)\n              = 2·Φ(−a/√T)   (a > 0)",
@@ -141,6 +151,17 @@ const DECK: FlashCard[] = [
     q: "Interbank 做市三环路?",
     a: "① 客盘 client flow (赚 bid-ask)\n② 内部撮合 internalization (对冲成本最低)\n③ 剩余风险抛 interbank\n做市赚价差, 不赌方向",
   },
+  // ── 策略 / 情景 ──
+  {
+    tag: "策略",
+    q: "组合策略 (straddle/RR/butterfly...) 定价的可加性?",
+    a: "价格与所有 Greeks 对腿线性可加:\nV = Σ qtyᵢ·Vᵢ,  Δ = Σ qtyᵢ·Δᵢ,  vega = Σ qtyᵢ·vegaᵢ\n每条腿用各自 smile vol σᵢ 定价再相加即可",
+  },
+  {
+    tag: "情景",
+    q: "情景矩阵 (risk ladder) 横竖轴各读什么?",
+    a: "横轴 = spot 冲击 → 沿行读 delta / gamma\n竖轴 = vol 冲击 → 沿列读 vega\nPnL(dS,dσ) ≈ Δ·dS + ½Γ·dS² + vega·dσ (+交叉项 vanna)",
+  },
 ];
 
 function shuffledIndices(n: number): number[] {
@@ -160,7 +181,10 @@ const TAG_COLOR: Record<string, string> = {
   Greeks: "text-steel border-steel/40",
   Smile: "text-plum border-plum/40",
   障碍: "text-crimson border-crimson/40",
+  "数字/触碰": "text-crimson border-crimson/40",
   随机分析: "text-forest border-forest/40",
+  策略: "text-gold border-gold/40",
+  情景: "text-steel border-steel/40",
   CIP: "text-forest border-forest/40",
   市场结构: "text-cloud border-line",
 };
@@ -286,7 +310,8 @@ export default function Flashcards() {
 
         <Note>
           键盘: ← 上一张 / → 下一张 / 空格 翻面。卡组 {n} 张, 覆盖五条肌肉记忆 + GK 公式 + Smile 报价 + 障碍 (BGK) +
-          CIP/carry + 随机分析 (反射原理 / Feynman-Kac) + 在岸市场结构 (CNY vs CNH / 中间价 / 做市商)。考前把
+          数字/触碰 (digital 对称 / OT+NT 互补) + CIP/carry + 随机分析 (反射原理 / Feynman-Kac) + 在岸市场结构 (CNY
+          vs CNH / 中间价 / 做市商) + 策略可加性 + 情景矩阵。考前把
           <span className="text-gold"> 肌肉记忆五条</span> 过到条件反射为止。
         </Note>
       </Card>

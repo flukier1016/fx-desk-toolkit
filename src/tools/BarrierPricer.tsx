@@ -1,36 +1,48 @@
-/** 障碍期权定价器 —— 连续/离散(BGK)监控,8 种组合,无 rebate;含 in–out 平价自检 */
-import { useState } from "react";
+/** 障碍期权定价器 —— 连续/离散(BGK)监控,8 种组合,无 rebate;含 in–out 平价自检
+ *  v2:S/rd/rf/σ/T 接入全局 useMarket(顶部 MarketBar 统一编辑),本地只留合约特有参数 K/B/方向/类型/监控 */
+import { useEffect, useState } from "react";
+import { useMarket } from "../state/market";
+import { pairConv } from "../lib/conventions";
 import { barrierPrice, bgkAdjustedBarrier, type InOut, type UpDown } from "../lib/barrier";
 import { gkPrice, type CP } from "../lib/gk";
 import { Card, Field, Select, Row, Note, fmt, fmtPct } from "../components/ui";
 
 type Mon = "continuous" | "discrete";
 
-export default function BarrierPricer() {
-  const [cp, setCp] = useState<CP>("call");
-  const [ud, setUd] = useState<UpDown>("down");
-  const [io, setIo] = useState<InOut>("out");
-  const [S, setS] = useState(7.2);
-  const [K, setK] = useState(7.2);
-  const [B, setB] = useState(7.0);
-  const [rdPct, setRdPct] = useState(1.9);
-  const [rfPct, setRfPct] = useState(4.3);
-  const [sigPct, setSigPct] = useState(5.5);
-  const [T, setT] = useState(0.25);
-  const [mon, setMon] = useState<Mon>("continuous");
-  const [mObs, setMObs] = useState(63);
+const LS_KEY = "fx-barrier-v2";
+interface Saved { cp: CP; ud: UpDown; io: InOut; K: number; B: number; mon: Mon; mObs: number }
+function loadSaved(): Partial<Saved> {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) ?? "{}") as Partial<Saved>; } catch { return {}; }
+}
 
-  const rd = rdPct / 100, rf = rfPct / 100, sigma = sigPct / 100;
+export default function BarrierPricer() {
+  const { mkt } = useMarket();
+  const { S, rd, rf, sigma, T } = mkt;
+  const conv = pairConv(mkt.pair);
+  const prec = conv.spotPrecision;
+
+  // ── 本地参数(合约特有;localStorage 持久化)──
+  const [init] = useState(loadSaved);
+  const [cp, setCp] = useState<CP>(init.cp ?? "call");
+  const [ud, setUd] = useState<UpDown>(init.ud ?? "down");
+  const [io, setIo] = useState<InOut>(init.io ?? "out");
+  const [K, setK] = useState(() => init.K ?? Number(S.toFixed(prec)));
+  const [B, setB] = useState(() => init.B ?? Number((S * 0.97).toFixed(prec)));
+  const [mon, setMon] = useState<Mon>(init.mon ?? "continuous");
+  const [mObs, setMObs] = useState(init.mObs ?? 63);
+  useEffect(() => {
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ cp, ud, io, K, B, mon, mObs })); } catch { /* 满/禁用 */ }
+  }, [cp, ud, io, K, B, mon, mObs]);
 
   // ── 参数校验 ──
   const errs: string[] = [];
-  if (!(Number.isFinite(S) && S > 0)) errs.push("现价 S 必须为正数");
+  if (!(Number.isFinite(S) && S > 0)) errs.push("现价 S 必须为正数(请在顶部市场栏修正)");
+  if (!(Number.isFinite(sigma) && sigma > 0)) errs.push("波动率 σ 必须为正数(请在顶部市场栏修正)");
+  if (!(Number.isFinite(T) && T > 0)) errs.push("期限 T 必须为正数(请在顶部市场栏修正)");
+  if (!Number.isFinite(rd)) errs.push("本币利率 rd 非法(请在顶部市场栏修正)");
+  if (!Number.isFinite(rf)) errs.push("外币利率 rf 非法(请在顶部市场栏修正)");
   if (!(Number.isFinite(K) && K > 0)) errs.push("行权价 K 必须为正数");
   if (!(Number.isFinite(B) && B > 0)) errs.push("障碍 B 必须为正数");
-  if (!(Number.isFinite(sigma) && sigma > 0)) errs.push("波动率 σ 必须为正数");
-  if (!(Number.isFinite(T) && T > 0)) errs.push("期限 T 必须为正数");
-  if (!Number.isFinite(rd)) errs.push("本币利率 rd 非法");
-  if (!Number.isFinite(rf)) errs.push("外币利率 rf 非法");
   if (Number.isFinite(S) && Number.isFinite(B) && S > 0 && B > 0) {
     if (ud === "down" && B >= S) errs.push("向下(down)障碍要求 B < S:当前 B ≥ S,合约起始即已触碰障碍,无定价意义");
     if (ud === "up" && B <= S) errs.push("向上(up)障碍要求 B > S:当前 B ≤ S,合约起始即已触碰障碍,无定价意义");
@@ -59,7 +71,7 @@ export default function BarrierPricer() {
     <g>
       <line x1={X(v)} x2={X(v)} y1={26} y2={74} stroke={color} strokeWidth={1.6} strokeDasharray={dash ? "4 3" : undefined} />
       <text x={Math.min(Math.max(X(v), 48), 592)} y={top ? 18 : 90} textAnchor="middle" fontSize={10} fill={color} fontFamily="ui-monospace, Menlo, monospace">
-        {label} {fmt(v, 4)}
+        {label} {fmt(v, prec)}
       </text>
     </g>
   );
@@ -68,7 +80,7 @@ export default function BarrierPricer() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Card title="合约与市场参数">
+      <Card title="合约参数(市场参数由顶部 MarketBar 提供)">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
           <Select<CP> label="期权类型 CP" value={cp} onChange={setCp}
             options={[{ value: "call", label: "看涨 Call" }, { value: "put", label: "看跌 Put" }]} />
@@ -76,18 +88,18 @@ export default function BarrierPricer() {
             options={[{ value: "down", label: "向下 Down" }, { value: "up", label: "向上 Up" }]} />
           <Select<InOut> label="障碍类型" value={io} onChange={setIo}
             options={[{ value: "out", label: "敲出 Out" }, { value: "in", label: "敲入 In" }]} />
-          <Field label="现价 S" value={S} onChange={setS} step="0.01" />
           <Field label="行权价 K" value={K} onChange={setK} step="0.01" />
           <Field label="障碍 B" value={B} onChange={setB} step="0.01" />
-          <Field label="本币利率 rd" value={rdPct} onChange={setRdPct} step="0.1" suffix="%" />
-          <Field label="外币利率 rf" value={rfPct} onChange={setRfPct} step="0.1" suffix="%" />
-          <Field label="波动率 σ" value={sigPct} onChange={setSigPct} step="0.1" suffix="%" />
-          <Field label="期限 T" value={T} onChange={setT} step="0.05" suffix="年" min={0} />
           <Select<Mon> label="障碍监控" value={mon} onChange={setMon}
             options={[{ value: "continuous", label: "连续 Continuous" }, { value: "discrete", label: "离散 Discrete" }]} />
           {mon === "discrete" && (
             <Field label="观察次数 m(63≈日度·3M)" value={mObs} onChange={(v) => setMObs(v)} step="1" min={1} suffix="次" />
           )}
+        </div>
+        <div className="mt-3 rounded-md border border-line bg-panel2/40 p-2.5 text-[11px] leading-relaxed text-slate2">
+          市场快照 · <span className="text-cloud">{mkt.pair}</span>({conv.base}/{conv.quote}):
+          S <span className="text-gold">{fmt(S, prec)}</span> · rd {fmtPct(rd, 2)} · rf {fmtPct(rf, 2)} ·
+          σ {fmtPct(sigma, 2)} · T {fmt(T, 3)} 年 —— 在顶部市场栏统一修改,所有工具联动。
         </div>
         {errs.length > 0 && (
           <div className="mt-3 rounded-md border border-crimson/60 bg-crimson/10 p-2.5 text-xs leading-relaxed text-crimson">
@@ -108,12 +120,12 @@ export default function BarrierPricer() {
               <>
                 <Row k="BGK 修正后障碍 B′" hint={B < S ? "下移·远离现价" : "上移·远离现价"} v={fmt(Badj, 6)} />
                 <Row k="平移量 B′ − B" hint={`m=${m} 次观察`}
-                  v={`${fmt((Badj - B) * 10000, 1)} pips`} tone={Badj - B < 0 ? "neg" : "pos"} />
+                  v={`${fmt((Badj - B) * conv.pipFactor, 1)} pips`} tone={Badj - B < 0 ? "neg" : "pos"} />
               </>
             )}
           </>
         ) : (
-          <p className="text-xs text-crimson">参数非法,请先修正左侧输入。</p>
+          <p className="text-xs text-crimson">参数非法,请先修正(市场参数在顶部市场栏,合约参数在左侧)。</p>
         )}
       </Card>
 

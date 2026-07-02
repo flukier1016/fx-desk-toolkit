@@ -1,40 +1,56 @@
 # FX 交易台工具箱 · fx-desk-toolkit
 
-> 中金 FICC 外汇交易实习随身工具 — **纯本地计算,数据不出浏览器**,单文件构建可拷到任何机器双击使用。
+> 中金 FICC 外汇实习随身工具 — **纯本地计算,数据不出浏览器**;单文件构建可拷任意机器双击用。
+> 架构、正确性方法论与扩展/迁移配方见 **[ARCHITECTURE.md](ARCHITECTURE.md)**。
 
-## 🧰 九个工具
+## 🧰 十三个工具(四组)
 
-| 工具 | 干什么 |
-|------|--------|
-| **GK 定价器** | Garman–Kohlhagen 期权定价 + 全套希腊字母(spot/forward/PA delta、Γ、vega、θ、ρ) |
-| **Delta⇄行权价** | 四种 delta 约定互换行权价;ATMF / DNS(pips) / DNS(pa) 一键 |
-| **微笑曲线** | ATM · 25ΔRR · 25ΔBF(可加 10Δ)重建 σ(Δ) 曲线 + 对应行权价表 |
-| **掉期点·CIP** | 理论远期/掉期点(单利·连续两口径);市场价反推隐含利率与交叉货币基差 |
-| **障碍期权** | 8 种敲入/敲出闭式解(反射原理)+ BGK 离散监控修正 + in–out 平价自检 |
-| **PnL 归因** | Δ/Γ/vega/θ/carry 瀑布分解;期权模式自动全重估出 residual |
-| **外汇时钟** | 24h 北京时间时段带:悉尼/东京/伦敦/纽约 + 9:15 中间价、9:30/16:30/23:30 关键时点倒计时 |
-| **考前速练** | 速查卡/考前 28 题主题的翻面卡片,键盘操作 |
-| **当日小结** | 发带教的每日小结生成器,实时预览 + 一键复制,草稿本地保存 |
+| 组 | 工具 | 干什么 |
+|----|------|--------|
+| 定价 | **GK 定价器** | Garman–Kohlhagen 期权价 + 全套希腊字母(spot/forward/PA delta) |
+| 定价 | **Delta⇄行权价** | 四种 delta 约定互算 K;ATMF / DNS(pips) / DNS(pa) 一键 |
+| 定价 | **数字·触碰** ★ | 现金/资产数字、one-touch/no-touch(含对称性自检行) |
+| 定价 | **障碍期权** | 8 种敲入敲出闭式解 + BGK 修正 + in–out 平价自检 |
+| 定价 | **组合策略** ★ | 多腿构建(跨式/宽跨/RR/蝶式/海鸥预设),净希腊字母 + 到期损益图 |
+| 市场 | **微笑曲线** | ATM·25ΔRR·25ΔBF(可加 10Δ)重建 σ(Δ) + 行权价表 |
+| 市场 | **掉期点·CIP** | 理论远期两口径;市场价反推隐含利率与交叉货币基差 |
+| 市场 | **外汇时钟** | 北京时间 session 带 + 9:15 中间价等关键时点倒计时 |
+| 风险 | **情景矩阵** ★ | 即期×波动率双向冲击热力网格(逐格重估) |
+| 风险 | **PnL 归因** | Δ/Γ/vega/θ/carry 瀑布;期权模式全重估出 residual |
+| 风险 | **头寸簿** ★ | 本地记账 + 全局参数实时重估,净 delta/vega/theta 汇总 |
+| 日常 | **考前速练** | 30 张翻面卡(速查卡/考前 28 题精华) |
+| 日常 | **当日小结** | 发带教的小结生成器,自动带行情快照,一键复制 |
 
-定价公式与《随机分析与FX定价·完整版》逐条对齐,核心库有 **19 个数值测试**把关
-(BS 经典基准值、put–call parity、PA delta 恒等式、数值希腊字母对拍、delta↔strike 往返、
-in–out 平价、BGK 收敛、CIP 反解往返、PnL 残差)。
+★ = v2 新增。**全局市场参数条**:S/rd/rf/σ/T/名义/货币对在顶部一处编辑,所有工具联动(localStorage 持久化,可导出/导入 JSON);货币对切换自动带出 pip 因子与 delta 惯例(约定注册表)。
+
+## ✅ 正确性:不变量方法论
+
+- 引擎(L0–L2 纯 TS,零依赖零 DOM)配 **32 个 vitest 不变量断言**:恒等式(parity、Δ_pa≡Δ_spot−V/S、KI+KO=香草、数字 C+P=e^{−rdT}、OT+NT 互补、策略=Σ腿)、极限(障碍远去→香草、BGK 收敛)、往返(delta↔K、CIP 反解)、交叉对拍(数值希腊字母、BS 经典值 10.4506)。
+- 右上角 **“✓ 引擎自检”**:同源 12 项不变量在你的浏览器里实时跑,全绿=这份文件算得对。
+- 方法论详见 [ARCHITECTURE.md §2](ARCHITECTURE.md)。
 
 ## 🚀 使用
 
 ```bash
 npm install
-npm run dev        # 开发
-npm run test       # 数值测试(vitest)
-npm run build      # 构建 → dist/index.html 单文件,自包含
+npm run dev      # 开发(Alt+←→ 切换工具;右上角切深/浅主题)
+npm test         # 32 个数值不变量
+npm run build    # → dist/index.html 单文件自包含
 ```
 
-**台子上用**:`npm run build` 后把 `dist/index.html` 一个文件拷走(U 盘/网盘),任何浏览器双击即用——无网络、无安装、无数据外发。
+**台子上用**:把 `dist/index.html` 一个文件拷走,任何浏览器双击即用——无网络、无安装、无数据外发。
+
+## 🔧 扩展与迁移(30 分钟配方)
+
+- **加工具**:lib 纯函数 → 配不变量 → (可选)挂自检 → 写 `tools/*.tsx` → `App.tsx` 注册一行 → README 登记。
+- **加货币对/改惯例**:只改 `src/lib/conventions.ts` 一行。
+- **换品牌色/主题**:只改 `src/index.css` 的 `@theme` 令牌。
+- **搬去 Python/Node/Excel/真后端**:引擎零依赖可直接搬,验收 = 把测试断言翻过去跑绿。详见 [ARCHITECTURE.md §6](ARCHITECTURE.md)。
 
 ## 🧱 技术
 
-Vite · React 19 · TypeScript · Tailwind 4 · 零图表库(手写 SVG)· 零运行时依赖(react/react-dom 之外)· vite-plugin-singlefile
+Vite · React 19 · TypeScript · Tailwind 4 · 手写 SVG(零图表库)· vite-plugin-singlefile · vitest
 
 ## ⚠️ 边界
 
-教育与自查用途;结果非投资建议;实盘一律以台子系统与市场惯例为准。夏令时、交易时段、市场惯例(delta 约定/pip 因子)因货币对而异,工具中已标注可调。
+教育与自查用途,非投资建议,以台子系统与市场惯例为准;已知取舍(常数波动率、到期支付口径、固定夏令时口径)见 ARCHITECTURE.md §7。
